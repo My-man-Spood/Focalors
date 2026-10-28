@@ -36,6 +36,19 @@ The SVGs are the pack's files renamed to the `wK` to `bP` scheme shared by
 every set here, otherwise unmodified. The PNGs are rasterizations of those
 SVGs. CC0 asks for no attribution; it is given here with thanks.
 
+## Sound effects
+
+[`assets/sound/`](assets/sound/) holds the full "standard" (default) sound
+theme from [lichess](https://lichess.org) — taken from
+[lichess-org/lila](https://github.com/lichess-org/lila/tree/master/public/sound/standard),
+with `Tournament1st/2nd/3rd/Other.mp3` pulled from lila's `piano` theme
+(the files `standard` itself symlinks those names to) — kept in full for
+future use even though only `Move`, `Capture` and `GenericNotify.mp3` are
+wired into the app today. Licensed
+[AGPL-3.0-or-later](https://www.gnu.org/licenses/agpl-3.0.html) (the lila
+project's own default license), compatible with Focalors' own
+GPL-3.0-or-later license under each license's section 13.
+
 ## Typeface
 
 The UI font is **Inter** by Rasmus Andersson and the Inter Project Authors

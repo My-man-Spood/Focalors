@@ -35,3 +35,5 @@ CI lives in `.github/workflows/ci.yml`. Pull requests and pushes run the test su
 ## Where to start
 
 Engine work happens in `src/search.rs`, `src/eval.rs`, and `src/nnue/`. GUI and player experience live in `src/gui.rs`. Persistence and stats are in `src/db.rs` and `src/analysis.rs`. Documentation and release polish are in the root docs and `.github/workflows/`. Pick one and stay there.
+
+Known tech debt and a ranked refactoring plan live in [docs/REFACTORING.md](docs/REFACTORING.md).

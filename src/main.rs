@@ -21,6 +21,7 @@ mod pgn;
 mod puzzles;
 mod selfmatch;
 mod selfplay;
+mod sound;
 mod strength;
 mod trainer;
 #[cfg(feature = "gpu-training")]

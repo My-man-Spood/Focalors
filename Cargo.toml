@@ -36,3 +36,4 @@ rusqlite = { version = "0.39.0", features = ["bundled"] }
 # when the `gpu-training` feature is enabled. Apache-2.0/MIT (both
 # GPL-compatible). Credit: CREDITS.md.
 burn = { version = "0.21", default-features = false, features = ["wgpu", "autodiff", "train", "ndarray", "std"], optional = true }
+rodio = { version = "0.23.0", default-features = false, features = ["playback", "mp3"] }

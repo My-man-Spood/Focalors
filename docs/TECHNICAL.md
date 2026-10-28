@@ -11,7 +11,18 @@ Focalors carries both an NNUE network and a hand-crafted evaluation (HCE), and b
 ```text
 src/
 ├── main.rs        entry point; routes to subcommands
-├── gui.rs         egui desktop app (play, review, puzzles, stats)
+├── gui/           egui desktop app (play, review, puzzles, stats)
+│   ├── mod.rs           core types, FocalorsApp, the eframe::App impl
+│   ├── home.rs          home dashboard, welcome dialog, local-game setup
+│   ├── play.rs          live board, controls, promotion, engine search
+│   ├── review.rs        Game Review / PGN import / post-game analysis
+│   ├── puzzle.rs        puzzle trainer
+│   ├── history.rs       saved-game history list
+│   ├── settings.rs      settings window, custom-opponent window
+│   ├── style.rs         theme colors, buttons, frames, charts, fonts
+│   ├── board_render.rs  board/square/piece-image rendering primitives
+│   └── game_state.rs    local-game rule helpers (outcome, history, timing)
+├── sound.rs       SFX playback (rodio)
 ├── analysis.rs    post-game review and explanation generation
 ├── search.rs      alpha-beta search with iterative deepening
 ├── eval.rs        hand-crafted evaluation

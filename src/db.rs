@@ -301,6 +301,11 @@ impl Database {
             "ALTER TABLE user_profile ADD COLUMN analysis_quality TEXT NOT NULL DEFAULT 'standard'",
             [],
         );
+        // Sound effects volume (0.0..=1.0), adjustable in Settings.
+        let _ = self.conn.execute(
+            "ALTER TABLE user_profile ADD COLUMN sfx_volume REAL NOT NULL DEFAULT 0.2",
+            [],
+        );
         let _ = self.conn.execute(
             "ALTER TABLE user_profile ADD COLUMN custom_use_time_limit INTEGER NOT NULL DEFAULT 1",
             [],
@@ -352,6 +357,25 @@ impl Database {
         self.conn.execute(
             "UPDATE user_profile SET board_theme = ?1, updated_at = datetime('now') WHERE id = 1",
             params![theme],
+        )?;
+        Ok(())
+    }
+
+    /// Read the persisted SFX volume (0.0..=1.0). Falls back to the default
+    /// on any error, so a stale DB without the column still starts.
+    pub fn get_sfx_volume(&self) -> SqlResult<f64> {
+        self.conn.query_row(
+            "SELECT sfx_volume FROM user_profile WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+    }
+
+    /// Persist the SFX volume.
+    pub fn set_sfx_volume(&self, volume: f64) -> SqlResult<()> {
+        self.conn.execute(
+            "UPDATE user_profile SET sfx_volume = ?1, updated_at = datetime('now') WHERE id = 1",
+            params![volume],
         )?;
         Ok(())
     }
