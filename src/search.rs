@@ -629,7 +629,7 @@ impl Searcher {
                 continue;
             }
 
-            let is_cap = is_capture(board, mv);
+            let is_cap = mv.is_capture(board);
             let is_quiet = !is_cap && !matches!(mv.flag(), MoveFlag::Promotion);
 
             // ── Futility pruning ───────────────────────────────────────
@@ -841,7 +841,7 @@ impl Searcher {
         let mut cap_len = 0usize;
         for i in 0..moves.len() {
             let mv = moves[i];
-            if !in_check && !is_capture(board, mv) && !matches!(mv.flag(), MoveFlag::Promotion) {
+            if !in_check && !mv.is_capture(board) && !matches!(mv.flag(), MoveFlag::Promotion) {
                 continue;
             }
             let see_val = see(board, mv);
@@ -1094,13 +1094,6 @@ fn cheapest_attacker(board: &Board, sq: Square, side: Color, occ: Bitboard) -> O
 // Move ordering
 // ════════════════════════════════════════════════════════════════════════════
 
-fn is_capture(board: &Board, mv: Move) -> bool {
-    if matches!(mv.flag(), MoveFlag::EnPassant) {
-        return true;
-    }
-    board.color_bb(board.side_to_move.flip()).contains(mv.to_sq())
-}
-
 fn order_moves(
     board: &Board,
     moves: &MoveList,
@@ -1143,7 +1136,7 @@ fn score_move(
         };
     }
 
-    if is_capture(board, mv) {
+    if mv.is_capture(board) {
         let see_val = see(board, mv);
         return if see_val >= 0 {
             60_000 + see_val // good captures: above quiets

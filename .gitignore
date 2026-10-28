@@ -1,6 +1,9 @@
 /target
 .env
 
+# Personal convenience script, not part of the project
+/install-local.sh
+
 # Local training and benchmark artifacts
 data/
 logs/

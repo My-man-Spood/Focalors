@@ -250,22 +250,11 @@ fn play_game(
             return Some((positions, GameResult::Draw));
         }
 
-        prev_was_capture = is_capture(&board, result.best_move);
+        prev_was_capture = result.best_move.is_capture(&board);
 
         make_move(&mut board, result.best_move);
         move_count += 1;
     }
-}
-
-/// Returns true if the move captures a piece (including en passant).
-fn is_capture(board: &Board, mv: crate::moves::Move) -> bool {
-    use crate::moves::MoveFlag;
-    if matches!(mv.flag(), MoveFlag::EnPassant) {
-        return true;
-    }
-    let to = mv.to_sq();
-    let them = board.side_to_move.flip();
-    matches!(board.piece_on(to), Some((c, _)) if c == them)
 }
 
 pub fn run_selfplay(

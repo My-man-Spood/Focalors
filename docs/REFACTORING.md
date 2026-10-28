@@ -36,9 +36,20 @@ effort. Check items off as they land; add new ones the same way.
   genuinely independent kind of cross-thread message shows up later; this
   one didn't need that machinery.
 
-- [ ] **3. Centralize duplicated rule helpers.** "Is this move a capture"
-  is implemented separately in `db.rs`, `selfplay.rs`, and `gui.rs`. One
-  shared helper in `board.rs` or `moves.rs`, called from all three.
+- [x] **3. Centralize duplicated rule helpers.** Done — and it turned out
+  to be four copies, not three: `db.rs` (SAN generation), `selfplay.rs`
+  (training-data generation), `gui/game_state.rs` (the sound/animation
+  work), and a fourth in `search.rs`'s hot move-ordering path that nobody
+  had flagged, written as a faster bitboard check
+  (`color_bb(enemy).contains(sq)`) instead of the `piece_on(sq)` the other
+  three used — same result, cheaper, since it skips identifying *which*
+  piece is there. Collapsed into one method, `Move::is_capture(self,
+  board: &Board) -> bool` in `moves.rs`, using the fast bitboard version as
+  the canonical implementation so the search path keeps its performance
+  instead of inheriting the slower check. All four call sites now read
+  `mv.is_capture(&board)`. Verified: full build, full test suite (203
+  passed, including the SEE/capture-specific search tests), clippy diff
+  showed no new warnings.
 
 - [ ] **4. Pull settings out of the `user_profile` SQL table.** Every
   preference is a column bolted on via `ALTER TABLE ADD COLUMN ...

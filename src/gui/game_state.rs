@@ -19,18 +19,8 @@ pub(crate) fn pending_animation(board: &Board, mv: Move, animate: bool) -> Optio
         MoveFlag::Castling => Some((to_sq - 2, to_sq + 1)),
         _ => None,
     };
-    let captured = is_capture_move(board, mv);
+    let captured = mv.is_capture(board);
     Some(PendingAnimation { from_sq, to_sq, piece, rook, captured, animate })
-}
-
-/// Whether `mv`, not yet played, captures a piece (including en passant).
-/// Checked against `board` before the move is applied.
-pub(crate) fn is_capture_move(board: &Board, mv: Move) -> bool {
-    if matches!(mv.flag(), MoveFlag::EnPassant) {
-        return true;
-    }
-    let them = board.side_to_move.flip();
-    matches!(board.piece_on(mv.to_sq()), Some((c, _)) if c == them)
 }
 
 /// SFX for a move that just landed, lichess-style: no distinct "check"

@@ -1204,7 +1204,7 @@ impl FocalorsApp {
                 // that position's move/capture sound, same as the live board.
                 if target > 0 {
                     let mv = r.moves[target - 1];
-                    let captured = is_capture_move(&r.boards[target - 1], mv);
+                    let captured = mv.is_capture(&r.boards[target - 1]);
                     review_sfx = Some(move_sfx(captured));
                 }
                 r.cursor = target;

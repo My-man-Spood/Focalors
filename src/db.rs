@@ -1006,8 +1006,7 @@ pub fn uci_to_san(board: &Board, uci: &str) -> String {
         None => return uci.to_string(),
     };
 
-    let is_capture = board.piece_on(to).is_some()
-        || matches!(flag, crate::moves::MoveFlag::EnPassant);
+    let is_capture = mv.is_capture(board);
 
     let mut san = String::new();
 

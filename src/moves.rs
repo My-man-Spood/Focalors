@@ -1,3 +1,4 @@
+use crate::board::Board;
 use crate::types::*;
 
 /// Compact move representation packed into a u16.
@@ -83,6 +84,17 @@ impl Move {
 
     pub const fn is_null(self) -> bool {
         self.0 == 0
+    }
+
+    /// Whether this move captures a piece (including en passant), checked
+    /// against `board` before the move is applied. A single bitboard test
+    /// — cheap enough for the search's hot path, which is also where this
+    /// was previously duplicated.
+    pub fn is_capture(self, board: &Board) -> bool {
+        if matches!(self.flag(), MoveFlag::EnPassant) {
+            return true;
+        }
+        board.color_bb(board.side_to_move.flip()).contains(self.to_sq())
     }
 
     /// UCI notation: e.g. "e2e4", "e7e8q" for promotions
