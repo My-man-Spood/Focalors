@@ -32,7 +32,12 @@ src/
 ├── selfplay.rs    self-play data generation
 ├── selfmatch.rs   engine-vs-engine match runner for strength benchmarking
 ├── tuning.rs      HCE weight tuning
-├── db.rs          SQLite persistence
+├── db.rs          SQLite persistence (game records, stats — not settings)
+├── migrations/    SQLite schema migrations (tracked, versioned; see
+│                  docs/REFACTORING.md item 4)
+├── settings.rs    user preferences, persisted as settings.toml — not
+│                  the same module as gui/settings.rs (the settings
+│                  *window*)
 ├── pgn.rs         PGN import/export
 ├── puzzles.rs     puzzle extraction and trainer
 ├── openings.rs    opening name lookup

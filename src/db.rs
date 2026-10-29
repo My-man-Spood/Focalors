@@ -56,66 +56,8 @@ impl Database {
         }
         eprintln!("Database: {}", path.display());
         let conn = Connection::open(&path)?;
-        let db = Database { conn };
-        db.init_schema()?;
-        db.migrate_phase4()?;
-        Ok(db)
-    }
-
-    fn init_schema(&self) -> SqlResult<()> {
-        self.conn.execute_batch(
-            "
-            CREATE TABLE IF NOT EXISTS user_profile (
-                id           INTEGER PRIMARY KEY DEFAULT 1,
-                name         TEXT    NOT NULL DEFAULT 'Player',
-                rating       INTEGER NOT NULL DEFAULT 1200,
-                games_played INTEGER NOT NULL DEFAULT 0,
-                created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
-                updated_at   TEXT    NOT NULL DEFAULT (datetime('now'))
-            );
-
-            CREATE TABLE IF NOT EXISTS games (
-                id             INTEGER PRIMARY KEY AUTOINCREMENT,
-                played_at      TEXT    NOT NULL DEFAULT (datetime('now')),
-                user_color     TEXT    NOT NULL CHECK(user_color IN ('white', 'black')),
-                result         TEXT    NOT NULL CHECK(result IN ('win', 'loss', 'draw')),
-                result_reason  TEXT,
-                time_control   TEXT,
-                engine_level   TEXT,
-                pgn            TEXT    NOT NULL,
-                move_count     INTEGER,
-                user_accuracy  REAL,
-                opening_name   TEXT
-            );
-
-            CREATE TABLE IF NOT EXISTS move_analysis (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                game_id         INTEGER NOT NULL REFERENCES games(id),
-                move_number     INTEGER NOT NULL,
-                side            TEXT    NOT NULL CHECK(side IN ('white', 'black')),
-                move_uci        TEXT    NOT NULL,
-                move_san        TEXT,
-                eval_before     INTEGER,
-                eval_after      INTEGER,
-                best_move       TEXT,
-                best_eval       INTEGER,
-                classification  TEXT,
-                eval_components TEXT
-            );
-
-            CREATE TABLE IF NOT EXISTS puzzles (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                game_id    INTEGER REFERENCES games(id),
-                fen        TEXT    NOT NULL,
-                solution   TEXT    NOT NULL,
-                theme      TEXT,
-                rating     INTEGER,
-                attempts   INTEGER DEFAULT 0,
-                solved     INTEGER DEFAULT 0,
-                created_at TEXT    NOT NULL DEFAULT (datetime('now'))
-            );
-            ",
-        )
+        crate::migrations::run_pending(&conn)?;
+        Ok(Database { conn })
     }
 
     // ── User Profile ───────────────────────────────────────────────────
@@ -252,198 +194,6 @@ impl Database {
     }
 
     // ── Phase 4: Adaptive Difficulty ─────────────────────────────────
-
-    /// Schema migration for Phase 4. Adds columns if they don't already exist.
-    /// ALTER TABLE ... ADD COLUMN is a no-op error if the column exists — we
-    /// just ignore those errors.
-    fn migrate_phase4(&self) -> SqlResult<()> {
-        // user_profile additions
-        let _ = self.conn.execute(
-            "ALTER TABLE user_profile ADD COLUMN rating_games INTEGER NOT NULL DEFAULT 0",
-            [],
-        );
-        let _ = self.conn.execute(
-            "ALTER TABLE user_profile ADD COLUMN adaptive_level INTEGER NOT NULL DEFAULT 10",
-            [],
-        );
-        // games table additions
-        let _ = self.conn.execute(
-            "ALTER TABLE games ADD COLUMN engine_numeric_level INTEGER",
-            [],
-        );
-        let _ = self.conn.execute(
-            "ALTER TABLE games ADD COLUMN rating_before INTEGER",
-            [],
-        );
-        let _ = self.conn.execute(
-            "ALTER TABLE games ADD COLUMN rating_after INTEGER",
-            [],
-        );
-        // UI preferences — added so dark/light mode survives restarts.
-        let _ = self.conn.execute(
-            "ALTER TABLE user_profile ADD COLUMN ui_theme TEXT NOT NULL DEFAULT 'light'",
-            [],
-        );
-        // Board color preset picked in Settings.
-        let _ = self.conn.execute(
-            "ALTER TABLE user_profile ADD COLUMN board_theme TEXT NOT NULL DEFAULT 'walnut'",
-            [],
-        );
-        // Piece graphics set picked in Settings.
-        let _ = self.conn.execute(
-            "ALTER TABLE user_profile ADD COLUMN piece_set TEXT NOT NULL DEFAULT 'cburnett'",
-            [],
-        );
-        // Game Review depth preset and the Custom opponent's thinking budget.
-        // The defaults are exactly what every profile used before these
-        // columns existed, so existing installs change nothing.
-        let _ = self.conn.execute(
-            "ALTER TABLE user_profile ADD COLUMN analysis_quality TEXT NOT NULL DEFAULT 'standard'",
-            [],
-        );
-        // Sound effects volume (0.0..=1.0), adjustable in Settings.
-        let _ = self.conn.execute(
-            "ALTER TABLE user_profile ADD COLUMN sfx_volume REAL NOT NULL DEFAULT 0.2",
-            [],
-        );
-        let _ = self.conn.execute(
-            "ALTER TABLE user_profile ADD COLUMN custom_use_time_limit INTEGER NOT NULL DEFAULT 1",
-            [],
-        );
-        let _ = self.conn.execute(
-            "ALTER TABLE user_profile ADD COLUMN custom_think_time_ms INTEGER NOT NULL DEFAULT 5000",
-            [],
-        );
-        let _ = self.conn.execute(
-            "ALTER TABLE user_profile ADD COLUMN custom_max_depth INTEGER NOT NULL DEFAULT 12",
-            [],
-        );
-        Ok(())
-    }
-
-    /// Read the persisted UI theme preference ('light' or 'dark'). Falls back
-    /// to 'light' if anything goes wrong (missing column on a stale DB, etc.)
-    /// so the GUI always has a usable default.
-    pub fn get_ui_theme(&self) -> SqlResult<String> {
-        self.conn.query_row(
-            "SELECT ui_theme FROM user_profile WHERE id = 1",
-            [],
-            |row| row.get(0),
-        )
-    }
-
-    /// Persist the UI theme preference.
-    pub fn set_ui_theme(&self, theme: &str) -> SqlResult<()> {
-        self.conn.execute(
-            "UPDATE user_profile SET ui_theme = ?1, updated_at = datetime('now') WHERE id = 1",
-            params![theme],
-        )?;
-        Ok(())
-    }
-
-    /// Read the persisted board theme preset (the GUI's `BoardTheme` in its
-    /// database string form). Callers fall back to the default board on any
-    /// error, so a stale DB without the column still starts.
-    pub fn get_board_theme(&self) -> SqlResult<String> {
-        self.conn.query_row(
-            "SELECT board_theme FROM user_profile WHERE id = 1",
-            [],
-            |row| row.get(0),
-        )
-    }
-
-    /// Persist the board theme preset.
-    pub fn set_board_theme(&self, theme: &str) -> SqlResult<()> {
-        self.conn.execute(
-            "UPDATE user_profile SET board_theme = ?1, updated_at = datetime('now') WHERE id = 1",
-            params![theme],
-        )?;
-        Ok(())
-    }
-
-    /// Read the persisted SFX volume (0.0..=1.0). Falls back to the default
-    /// on any error, so a stale DB without the column still starts.
-    pub fn get_sfx_volume(&self) -> SqlResult<f64> {
-        self.conn.query_row(
-            "SELECT sfx_volume FROM user_profile WHERE id = 1",
-            [],
-            |row| row.get(0),
-        )
-    }
-
-    /// Persist the SFX volume.
-    pub fn set_sfx_volume(&self, volume: f64) -> SqlResult<()> {
-        self.conn.execute(
-            "UPDATE user_profile SET sfx_volume = ?1, updated_at = datetime('now') WHERE id = 1",
-            params![volume],
-        )?;
-        Ok(())
-    }
-
-    /// Read the persisted piece set (the GUI's `PieceSet` in its database
-    /// string form). Callers fall back to the default set on any error, so
-    /// a stale DB without the column still starts.
-    pub fn get_piece_set(&self) -> SqlResult<String> {
-        self.conn.query_row(
-            "SELECT piece_set FROM user_profile WHERE id = 1",
-            [],
-            |row| row.get(0),
-        )
-    }
-
-    /// Persist the piece set.
-    pub fn set_piece_set(&self, set: &str) -> SqlResult<()> {
-        self.conn.execute(
-            "UPDATE user_profile SET piece_set = ?1, updated_at = datetime('now') WHERE id = 1",
-            params![set],
-        )?;
-        Ok(())
-    }
-
-    /// Read the persisted Game Review depth preset (the GUI's
-    /// `AnalysisQuality` in its database string form).
-    pub fn get_analysis_quality(&self) -> SqlResult<String> {
-        self.conn.query_row(
-            "SELECT analysis_quality FROM user_profile WHERE id = 1",
-            [],
-            |row| row.get(0),
-        )
-    }
-
-    /// Persist the Game Review depth preset.
-    pub fn set_analysis_quality(&self, quality: &str) -> SqlResult<()> {
-        self.conn.execute(
-            "UPDATE user_profile SET analysis_quality = ?1, updated_at = datetime('now') WHERE id = 1",
-            params![quality],
-        )?;
-        Ok(())
-    }
-
-    /// Read the Custom opponent's thinking budget: (time limit rather than
-    /// depth, think time in ms, depth). Raw integers; the GUI clamps them.
-    pub fn get_custom_engine(&self) -> SqlResult<(bool, i64, i64)> {
-        self.conn.query_row(
-            "SELECT custom_use_time_limit, custom_think_time_ms, custom_max_depth \
-             FROM user_profile WHERE id = 1",
-            [],
-            |row| Ok((row.get::<_, i64>(0)? != 0, row.get(1)?, row.get(2)?)),
-        )
-    }
-
-    /// Persist the Custom opponent's thinking budget.
-    pub fn set_custom_engine(
-        &self,
-        use_time_limit: bool,
-        think_time_ms: u64,
-        max_depth: u32,
-    ) -> SqlResult<()> {
-        self.conn.execute(
-            "UPDATE user_profile SET custom_use_time_limit = ?1, custom_think_time_ms = ?2, \
-             custom_max_depth = ?3, updated_at = datetime('now') WHERE id = 1",
-            params![use_time_limit as i64, think_time_ms as i64, max_depth as i64],
-        )?;
-        Ok(())
-    }
 
     /// Update the user's rating after a game using Elo formula.
     /// Returns (old_rating, new_rating).
@@ -1106,82 +856,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn board_theme_defaults_to_walnut_and_round_trips() {
-        let db = Database {
-            conn: Connection::open_in_memory().unwrap(),
-        };
-        db.init_schema().unwrap();
-        db.migrate_phase4().unwrap();
-        db.get_or_create_profile().unwrap();
-
-        // Existing profiles get the board they always had.
-        assert_eq!(db.get_board_theme().unwrap(), "walnut");
-        db.set_board_theme("glacier").unwrap();
-        assert_eq!(db.get_board_theme().unwrap(), "glacier");
-        // The UI theme shares the row and must be left alone.
-        assert_eq!(db.get_ui_theme().unwrap(), "light");
-
-        // Running the migration again (every app start does) keeps the choice.
-        db.migrate_phase4().unwrap();
-        assert_eq!(db.get_board_theme().unwrap(), "glacier");
-    }
-
-    #[test]
-    fn piece_set_defaults_to_cburnett_and_round_trips() {
-        let db = Database {
-            conn: Connection::open_in_memory().unwrap(),
-        };
-        db.init_schema().unwrap();
-        db.migrate_phase4().unwrap();
-        db.get_or_create_profile().unwrap();
-
-        // Existing profiles keep the pieces they always had.
-        assert_eq!(db.get_piece_set().unwrap(), "cburnett");
-        db.set_piece_set("rhosgfx").unwrap();
-        assert_eq!(db.get_piece_set().unwrap(), "rhosgfx");
-        // The board theme shares the row and must be left alone.
-        assert_eq!(db.get_board_theme().unwrap(), "walnut");
-
-        // Running the migration again (every app start does) keeps the choice.
-        db.migrate_phase4().unwrap();
-        assert_eq!(db.get_piece_set().unwrap(), "rhosgfx");
-    }
-
-    #[test]
-    fn analysis_quality_and_custom_opponent_default_and_round_trip() {
-        let db = Database {
-            conn: Connection::open_in_memory().unwrap(),
-        };
-        // Profile row first, migration second: the order an existing
-        // install upgrades in, so the new columns must backfill that row.
-        db.init_schema().unwrap();
-        db.get_or_create_profile().unwrap();
-        db.migrate_phase4().unwrap();
-
-        // Defaults are what every profile used before these columns.
-        assert_eq!(db.get_analysis_quality().unwrap(), "standard");
-        assert_eq!(db.get_custom_engine().unwrap(), (true, 5000, 12));
-
-        db.set_analysis_quality("deep").unwrap();
-        db.set_custom_engine(false, 2500, 9).unwrap();
-        assert_eq!(db.get_analysis_quality().unwrap(), "deep");
-        assert_eq!(db.get_custom_engine().unwrap(), (false, 2500, 9));
-        // Neighbouring columns are left alone.
-        assert_eq!(db.get_piece_set().unwrap(), "cburnett");
-        assert_eq!(db.get_board_theme().unwrap(), "walnut");
-
-        // Running the migration again (every app start does) keeps it all.
-        db.migrate_phase4().unwrap();
-        assert_eq!(db.get_analysis_quality().unwrap(), "deep");
-        assert_eq!(db.get_custom_engine().unwrap(), (false, 2500, 9));
-    }
-
-    #[test]
     fn db_opens_and_creates_profile() {
         let db = Database {
             conn: Connection::open_in_memory().unwrap(),
         };
-        db.init_schema().unwrap();
+        crate::migrations::run_pending(&db.conn).unwrap();
         let profile = db.get_or_create_profile().unwrap();
         assert_eq!(profile.name, "Player");
         assert_eq!(profile.rating, 1200);
@@ -1193,7 +872,7 @@ mod tests {
         let db = Database {
             conn: Connection::open_in_memory().unwrap(),
         };
-        db.init_schema().unwrap();
+        crate::migrations::run_pending(&db.conn).unwrap();
         db.get_or_create_profile().unwrap();
         db.update_profile("Nick", 1500).unwrap();
         let p = db.get_or_create_profile().unwrap();
@@ -1206,7 +885,7 @@ mod tests {
         let db = Database {
             conn: Connection::open_in_memory().unwrap(),
         };
-        db.init_schema().unwrap();
+        crate::migrations::run_pending(&db.conn).unwrap();
 
         let id = db
             .save_game("white", "win", Some("checkmate"), Some("10+0"), Some("Club"), "1. e4 e5 1-0", Some(2))
@@ -1224,7 +903,7 @@ mod tests {
         let db = Database {
             conn: Connection::open_in_memory().unwrap(),
         };
-        db.init_schema().unwrap();
+        crate::migrations::run_pending(&db.conn).unwrap();
 
         db.save_game("white", "win", None, None, None, "1-0", None).unwrap();
         db.save_game("black", "loss", None, None, None, "1-0", None).unwrap();
@@ -1287,7 +966,7 @@ mod coaching_stats_tests {
         let db = Database {
             conn: Connection::open_in_memory().unwrap(),
         };
-        db.init_schema().unwrap();
+        crate::migrations::run_pending(&db.conn).unwrap();
         let game_id = db
             .save_game("white", "win", None, None, None, "", Some(2))
             .unwrap();
@@ -1332,7 +1011,7 @@ mod coaching_stats_tests {
         let db = Database {
             conn: Connection::open_in_memory().unwrap(),
         };
-        db.init_schema().unwrap();
+        crate::migrations::run_pending(&db.conn).unwrap();
         for (result, level) in [
             ("win", "Adaptive"),
             ("loss", "Master"),

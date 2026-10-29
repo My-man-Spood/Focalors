@@ -51,12 +51,52 @@ effort. Check items off as they land; add new ones the same way.
   passed, including the SEE/capture-specific search tests), clippy diff
   showed no new warnings.
 
-- [ ] **4. Pull settings out of the `user_profile` SQL table.** Every
-  preference is a column bolted on via `ALTER TABLE ADD COLUMN ...
-  DEFAULT x` with errors swallowed. No schema version, no down-migration,
-  and settings are mixed into the same row as profile stats. Move to a
-  real key-value settings table (or a TOML prefs file) and leave SQLite
-  for game records.
+- [x] **4. Pull settings out of the `user_profile` SQL table.** Done, and
+  grew into two things: a real migration framework for SQLite, and
+  `settings.toml` for preferences.
+
+  **Migration framework** (`src/migrations/`): a `Migration` trait
+  (`version`, `name`, `up`, `down`), one file per migration
+  (`m0001_initial_schema.rs`, `m0002_settings_to_toml.rs`), a
+  `schema_migrations` tracking table, and a runner that applies whatever
+  isn't yet recorded, each inside its own transaction. Plain sequential
+  version numbers, not timestamps — this is a solo project on one branch,
+  so there's no multi-contributor merge-collision risk to design around.
+  `down()` is real and tested but never auto-invoked; it exists for
+  manual/dev rollback.
+
+  Migration #1 is the schema as it stood right before this system
+  existed — everything the old `init_schema()` plus the old
+  `migrate_phase4()`'s pile of `ALTER TABLE ADD COLUMN` calls had already
+  produced. A no-op on every existing install (tables already exist), the
+  real thing on a fresh one. No attempt to retroactively "replay" history
+  that already safely happened on every machine that's ever run the app —
+  real tracked migrations start from here, going forward.
+
+  Migration #2 is the actual change: reads the 8 settings columns out of
+  `user_profile`, writes `settings.toml`, drops the columns.
+
+  **Settings file** (`src/settings.rs`): a `Settings` struct
+  (`serde` + `toml`), loaded once at startup instead of 6 separate DB
+  round trips, saved as a whole file on every change (TOML's idiomatic
+  shape — no `UPDATE ... SET x = ?` equivalent, and that's fine: a new
+  setting just gets `#[serde(default)]`, no migration needed at all; a
+  removed one just goes unwritten next save, serde ignores unknown keys
+  on load). Field shapes match what the DB columns held, so the GUI's
+  existing `from_db_str`/`as_db_str` conversions needed no changes.
+
+  Verified: full build, full test suite (208 passed — 3 DB tests for the
+  removed settings columns deleted, replaced with 8 new tests: 4 for
+  `settings.rs`'s load/save/default/partial-file behavior using temp
+  files rather than the real settings path, 4 for the migration runner's
+  skip/rollback/ordering mechanics using throwaway fake migrations rather
+  than the real ones — both deliberately avoid touching real on-disk
+  state from a test run). Then verified for real: ran the actual binary
+  against an isolated copy of the real, in-use database (never the real
+  file) — confirmed the 8 columns dropped, `settings.toml` came out with
+  the exact values the database had, a second run didn't re-apply
+  anything, and a from-scratch fresh install built correctly with no
+  dangling settings columns.
 
 - [ ] **5. Workspace split: engine lib vs. GUI bin.** The engine
   (`board`/`movegen`/`attacks`/`moves`/`eval`/`search`/`nnue`) is already

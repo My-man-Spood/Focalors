@@ -35,7 +35,7 @@ use style::*;
 
 /// How the Custom opponent thinks: a fixed time per move or a fixed depth.
 /// Only the Custom profile reads these; the named profiles carry their own
-/// strength settings. Persisted in the profile row.
+/// strength settings. Persisted in settings.toml.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct EngineSettings {
     pub max_depth: u32,
@@ -1159,51 +1159,30 @@ impl FocalorsApp {
             .and_then(|db| db.get_adaptive_level().ok())
             .unwrap_or(10);
 
-        // Load the persisted theme (falls back to Light if absent / unparsable)
-        // and apply it to egui's visuals before the first frame.
-        let ui_theme = db
-            .as_ref()
-            .and_then(|db| db.get_ui_theme().ok())
-            .map(|s| UiTheme::from_db_str(&s))
-            .unwrap_or(UiTheme::Light);
+        // Preferences live in settings.toml, not the database (see
+        // docs/REFACTORING.md item 4) — one load instead of six DB round
+        // trips. Falls back to defaults on a missing/corrupt file.
+        let loaded_settings = crate::settings::load();
+
+        // Applied to egui's visuals before the first frame.
+        let ui_theme = UiTheme::from_db_str(&loaded_settings.ui_theme);
         configure_theme(&cc.egui_ctx, ui_theme);
 
-        // Same for the board preset: stored in the profile row and applied
-        // through a process-wide atomic, like the UI theme.
-        let board_theme = db
-            .as_ref()
-            .and_then(|db| db.get_board_theme().ok())
-            .map(|s| BoardTheme::from_db_str(&s))
-            .unwrap_or(BoardTheme::Walnut);
+        // Applied through a process-wide atomic, like the UI theme.
+        let board_theme = BoardTheme::from_db_str(&loaded_settings.board_theme);
         ACTIVE_BOARD_THEME.store(board_theme.index(), Ordering::Relaxed);
 
-        let piece_set = db
-            .as_ref()
-            .and_then(|db| db.get_piece_set().ok())
-            .map(|s| PieceSet::from_db_str(&s))
-            .unwrap_or(PieceSet::Cburnett);
+        let piece_set = PieceSet::from_db_str(&loaded_settings.piece_set);
+        let analysis_quality = AnalysisQuality::from_db_str(&loaded_settings.analysis_quality);
+        let sfx_volume = loaded_settings.sfx_volume as f32;
 
-        let analysis_quality = db
-            .as_ref()
-            .and_then(|db| db.get_analysis_quality().ok())
-            .map(|s| AnalysisQuality::from_db_str(&s))
-            .unwrap_or(AnalysisQuality::Standard);
-
-        let sfx_volume = db
-            .as_ref()
-            .and_then(|db| db.get_sfx_volume().ok())
-            .map(|v| v as f32)
-            .unwrap_or(crate::sound::DEFAULT_VOLUME);
-
-        // The Custom opponent's values live in the profile row too. Loaded
-        // before the first search can start, so a saved Custom setup plays
-        // the same after a restart.
-        if let Some((use_time_limit, think_time_ms, max_depth)) =
-            db.as_ref().and_then(|db| db.get_custom_engine().ok())
-        {
-            state.lock().unwrap().engine_settings =
-                EngineSettings::from_stored(use_time_limit, think_time_ms, max_depth);
-        }
+        // Loaded before the first search can start, so a saved Custom
+        // setup plays the same after a restart.
+        state.lock().unwrap().engine_settings = EngineSettings::from_stored(
+            loaded_settings.custom_use_time_limit,
+            loaded_settings.custom_think_time_ms,
+            loaded_settings.custom_max_depth,
+        );
 
         let session_start_rating = profile.as_ref().map_or(1200, |p| p.rating);
         let session_start_games = profile.as_ref().map_or(0, |p| p.games_played);
@@ -1274,6 +1253,25 @@ impl FocalorsApp {
         }
     }
 
+    /// Writes every preference currently held on `self` to settings.toml.
+    /// TOML has no partial-update story the way `UPDATE ... SET x = ?`
+    /// did, so every setter just rewrites the whole file — that's the
+    /// idiomatic shape for this format, not a workaround.
+    fn save_settings(&self) {
+        let engine_settings = self.state.lock().unwrap().engine_settings.clone();
+        let settings = crate::settings::Settings {
+            ui_theme: self.ui_theme.as_db_str().to_string(),
+            board_theme: self.board_theme.as_db_str().to_string(),
+            piece_set: self.piece_set.as_db_str().to_string(),
+            analysis_quality: self.analysis_quality.as_db_str().to_string(),
+            sfx_volume: self.sfx_volume as f64,
+            custom_use_time_limit: engine_settings.use_time_limit,
+            custom_think_time_ms: engine_settings.think_time_ms as i64,
+            custom_max_depth: engine_settings.max_depth as i64,
+        };
+        let _ = crate::settings::save(&settings);
+    }
+
     fn set_sfx_volume(&mut self, volume: f32) {
         self.sfx_volume = volume.clamp(0.0, 1.0);
         self.sfx_volume_dirty = true;
@@ -1282,34 +1280,25 @@ impl FocalorsApp {
     fn set_ui_theme(&mut self, ctx: &egui::Context, theme: UiTheme) {
         self.ui_theme = theme;
         configure_theme(ctx, theme);
-        // Persist so the choice survives restart. Best-effort: ignore DB
-        // write errors so a transient I/O hiccup never breaks the toggle.
-        if let Some(ref db) = self.db {
-            let _ = db.set_ui_theme(theme.as_db_str());
-        }
+        // Persist so the choice survives restart. Best-effort: a transient
+        // I/O hiccup writing settings.toml never breaks the toggle.
+        self.save_settings();
     }
 
     fn set_board_theme(&mut self, theme: BoardTheme) {
         self.board_theme = theme;
         ACTIVE_BOARD_THEME.store(theme.index(), Ordering::Relaxed);
-        // Best-effort persistence, same as the UI theme.
-        if let Some(ref db) = self.db {
-            let _ = db.set_board_theme(theme.as_db_str());
-        }
+        self.save_settings();
     }
 
     fn set_piece_set(&mut self, set: PieceSet) {
         self.piece_set = set;
-        if let Some(ref db) = self.db {
-            let _ = db.set_piece_set(set.as_db_str());
-        }
+        self.save_settings();
     }
 
     fn set_analysis_quality(&mut self, quality: AnalysisQuality) {
         self.analysis_quality = quality;
-        if let Some(ref db) = self.db {
-            let _ = db.set_analysis_quality(quality.as_db_str());
-        }
+        self.save_settings();
     }
 
     /// Full-size image of a piece in the active set.
