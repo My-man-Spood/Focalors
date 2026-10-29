@@ -23,10 +23,12 @@ mod settings;
 mod stats;
 mod board_render;
 mod game_state;
+mod omarchy;
 mod style;
 
 use board_render::*;
 use game_state::*;
+use omarchy::OmarchyPalette;
 use style::*;
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -210,42 +212,67 @@ enum HomePage {
 enum UiTheme {
     Dark,
     Light,
+    /// Follows the OS's light/dark signal. On Omarchy specifically, also
+    /// adopts Omarchy's actual accent/background palette instead of just
+    /// picking between Focalors' own built-in Dark/Light looks — see
+    /// `gui/omarchy.rs` and `resolve_system_theme`.
+    System,
 }
 
 impl UiTheme {
+    /// Used by the quick top-bar toggle, which is a plain two-way switch:
+    /// clicking it while on `System` overrides to the opposite of
+    /// whatever System is *currently* resolving to — not a hardcoded
+    /// guess, since System showing as effectively dark and "toggling" to
+    /// dark again would be a no-op the button didn't advertise.
     fn toggle(self) -> Self {
         match self {
             UiTheme::Dark => UiTheme::Light,
             UiTheme::Light => UiTheme::Dark,
+            UiTheme::System => current_theme().toggle(),
         }
     }
 
+    /// Only ever called with a *resolved* Dark/Light (never `System` —
+    /// callers resolve first), so the `System` arm is just a defensive
+    /// default and never actually reached in practice.
     fn index(self) -> u8 {
         match self {
-            UiTheme::Dark => 0,
+            UiTheme::Dark | UiTheme::System => 0,
             UiTheme::Light => 1,
         }
     }
 
-    /// String form persisted to the SQLite user_profile.ui_theme column.
+    /// String form persisted to settings.toml.
     fn as_db_str(self) -> &'static str {
         match self {
             UiTheme::Dark => "dark",
             UiTheme::Light => "light",
+            UiTheme::System => "system",
         }
     }
 
     /// Inverse of `as_db_str`. Unknown values fall back to Light so a
-    /// corrupted or older DB row doesn't break startup.
+    /// corrupted or older settings file doesn't break startup.
     fn from_db_str(s: &str) -> Self {
         match s {
             "dark" => UiTheme::Dark,
+            "system" => UiTheme::System,
             _ => UiTheme::Light,
         }
     }
 }
 
 static ACTIVE_THEME: AtomicU8 = AtomicU8::new(0);
+
+/// Set only while `UiTheme::System` resolves to Omarchy's own palette
+/// (see `resolve_system_theme`); `None` otherwise, including whenever a
+/// concrete Dark or Light is picked directly. The `hydra_*` chrome colors
+/// in `style.rs` check this before falling back to the built-in palette —
+/// a `Mutex` rather than another atomic because a color doesn't fit in a
+/// byte, but it's read far more than it's written, so contention is a
+/// non-issue.
+static ACTIVE_OMARCHY_PALETTE: Mutex<Option<OmarchyPalette>> = Mutex::new(None);
 
 /// Board color preset, picked in Settings. Only the two square colors differ
 /// between presets: the selection and last-move highlights are the same gold
@@ -1003,6 +1030,10 @@ pub struct FocalorsApp {
     /// plays no matter how the game ended — checkmate, resignation,
     /// timeout, draw — not just when the ending move was the trigger.
     game_end_sound_played: bool,
+    /// Rate-limits re-checking Omarchy/the OS theme signal while
+    /// `UiTheme::System` is active, so a live Omarchy theme switch is
+    /// picked up without re-reading two files every single frame.
+    last_system_theme_poll: Option<Instant>,
 }
 
 macro_rules! piece_set_images {
@@ -1244,6 +1275,7 @@ impl FocalorsApp {
             sfx_volume,
             sfx_volume_dirty: false,
             game_end_sound_played: false,
+            last_system_theme_poll: None,
         }
     }
 
@@ -1275,6 +1307,27 @@ impl FocalorsApp {
     fn set_sfx_volume(&mut self, volume: f32) {
         self.sfx_volume = volume.clamp(0.0, 1.0);
         self.sfx_volume_dirty = true;
+    }
+
+    /// While "Match System" is selected, re-checks Omarchy/the OS signal
+    /// every couple of seconds so a theme switched live in Omarchy (or an
+    /// OS-level light/dark flip) shows up without restarting Focalors or
+    /// reopening Settings. Rate-limited rather than watched, since it's
+    /// just two small file reads — cheap enough not to need a real
+    /// filesystem watcher.
+    fn poll_system_theme(&mut self, ctx: &egui::Context) {
+        if self.ui_theme != UiTheme::System {
+            return;
+        }
+        let now = Instant::now();
+        if self
+            .last_system_theme_poll
+            .is_some_and(|last| now.duration_since(last) < Duration::from_secs(2))
+        {
+            return;
+        }
+        self.last_system_theme_poll = Some(now);
+        configure_theme(ctx, self.ui_theme);
     }
 
     fn set_ui_theme(&mut self, ctx: &egui::Context, theme: UiTheme) {
@@ -1526,6 +1579,7 @@ impl eframe::App for FocalorsApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.update_local_clock_state();
+        self.poll_system_theme(&ctx);
 
         // Auto-save completed games to DB
         {
@@ -1580,6 +1634,8 @@ impl eframe::App for FocalorsApp {
                     let toggle_label = match self.ui_theme {
                         UiTheme::Dark => "Light Mode",
                         UiTheme::Light => "Dark Mode",
+                        UiTheme::System if current_theme() == UiTheme::Dark => "Light Mode",
+                        UiTheme::System => "Dark Mode",
                     };
                     if ui.add(theme_toggle_button(toggle_label)).clicked() {
                         self.set_ui_theme(&ctx, self.ui_theme.toggle());

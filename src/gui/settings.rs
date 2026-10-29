@@ -31,13 +31,27 @@ impl FocalorsApp {
                 ui.label(hydra_heading("APPEARANCE", 10.0).color(hydra_subtle_text()));
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("App theme").size(12.5));
-                    for (theme, label) in [(UiTheme::Dark, "Dark"), (UiTheme::Light, "Light")] {
+                    for (theme, label) in [
+                        (UiTheme::Dark, "Dark"),
+                        (UiTheme::Light, "Light"),
+                        (UiTheme::System, "Match System"),
+                    ] {
                         let selected = self.ui_theme == theme;
                         if ui.add(home_nav_button(selected, label)).clicked() && !selected {
                             pick_ui_theme = Some(theme);
                         }
                     }
                 });
+                if self.ui_theme == UiTheme::System {
+                    ui.add_space(4.0);
+                    let status = match omarchy::active_theme_name() {
+                        Some(name) => format!("Following Omarchy's \u{201c}{name}\u{201d} theme."),
+                        None => "Following your system's light/dark setting.".to_string(),
+                    };
+                    ui.label(
+                        egui::RichText::new(status).size(11.0).color(hydra_subtle_text()),
+                    );
+                }
 
                 ui.add_space(SECTION_GAP - ui.spacing().item_spacing.y);
                 ui.label(hydra_heading("BOARD", 10.0).color(hydra_subtle_text()));

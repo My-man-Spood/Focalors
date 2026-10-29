@@ -7,21 +7,35 @@ pub(crate) fn current_theme() -> UiTheme {
     }
 }
 
+/// The Omarchy-derived chrome palette, when `UiTheme::System` resolved to
+/// one. Cheap: a `Mutex` lock and a `Copy`.
+fn active_omarchy_palette() -> Option<OmarchyPalette> {
+    *ACTIVE_OMARCHY_PALETTE.lock().unwrap()
+}
+
 pub(crate) fn theme_rgb(dark: [u8; 3], light: [u8; 3]) -> egui::Color32 {
-    match current_theme() {
-        UiTheme::Dark => egui::Color32::from_rgb(dark[0], dark[1], dark[2]),
-        UiTheme::Light => egui::Color32::from_rgb(light[0], light[1], light[2]),
+    // current_theme() is always a resolved Dark/Light (System is resolved
+    // away before it's ever stored), but the type itself still has three
+    // variants, so this reads as a bool rather than an inexhaustive match.
+    if current_theme() == UiTheme::Dark {
+        egui::Color32::from_rgb(dark[0], dark[1], dark[2])
+    } else {
+        egui::Color32::from_rgb(light[0], light[1], light[2])
     }
 }
 
 pub(crate) fn theme_rgba(dark: [u8; 4], light: [u8; 4]) -> egui::Color32 {
-    match current_theme() {
-        UiTheme::Dark => egui::Color32::from_rgba_premultiplied(dark[0], dark[1], dark[2], dark[3]),
-        UiTheme::Light => egui::Color32::from_rgba_premultiplied(light[0], light[1], light[2], light[3]),
+    if current_theme() == UiTheme::Dark {
+        egui::Color32::from_rgba_premultiplied(dark[0], dark[1], dark[2], dark[3])
+    } else {
+        egui::Color32::from_rgba_premultiplied(light[0], light[1], light[2], light[3])
     }
 }
 
 pub(crate) fn hydra_accent() -> egui::Color32 {
+    if let Some(p) = active_omarchy_palette() {
+        return p.accent;
+    }
     theme_rgb([118, 147, 255], [69, 102, 214])
 }
 
@@ -32,6 +46,9 @@ pub(crate) fn hydra_accent() -> egui::Color32 {
 /// constructor without re-checking every user. Callouts use
 /// `hydra_callout_fill()`, which is a real tint.
 pub(crate) fn hydra_accent_soft() -> egui::Color32 {
+    if let Some(p) = active_omarchy_palette() {
+        return p.accent_soft;
+    }
     theme_rgba([118, 147, 255, 34], [69, 102, 214, 24])
 }
 
@@ -39,9 +56,10 @@ pub(crate) fn hydra_accent_soft() -> egui::Color32 {
 /// shipped with; light mode gets a faint tint, because the same color clamps
 /// to white there and the running side was only told apart by text shade.
 pub(crate) fn hydra_clock_active_fill() -> egui::Color32 {
-    match current_theme() {
-        UiTheme::Dark => hydra_accent_soft(),
-        UiTheme::Light => egui::Color32::from_rgba_unmultiplied(69, 102, 214, 28),
+    if current_theme() == UiTheme::Dark {
+        hydra_accent_soft()
+    } else {
+        egui::Color32::from_rgba_unmultiplied(69, 102, 214, 28)
     }
 }
 
@@ -50,29 +68,45 @@ pub(crate) fn hydra_clock_active_fill() -> egui::Color32 {
 /// keeps its contrast; light mode keeps the plain card fill, where the
 /// accent stroke alone marks the box.
 pub(crate) fn hydra_callout_fill() -> egui::Color32 {
-    match current_theme() {
-        UiTheme::Dark => egui::Color32::from_rgba_unmultiplied(118, 147, 255, 34),
-        UiTheme::Light => hydra_panel_fill(),
+    if current_theme() == UiTheme::Dark {
+        egui::Color32::from_rgba_unmultiplied(118, 147, 255, 34)
+    } else {
+        hydra_panel_fill()
     }
 }
 
 pub(crate) fn hydra_text() -> egui::Color32 {
+    if let Some(p) = active_omarchy_palette() {
+        return p.text;
+    }
     theme_rgb([232, 236, 242], [34, 39, 46])
 }
 
 pub(crate) fn hydra_text_on_accent() -> egui::Color32 {
+    if let Some(p) = active_omarchy_palette() {
+        return p.text_on_accent;
+    }
     theme_rgb([246, 248, 252], [247, 249, 255])
 }
 
 pub(crate) fn hydra_subtle_text() -> egui::Color32 {
+    if let Some(p) = active_omarchy_palette() {
+        return p.subtle_text;
+    }
     theme_rgb([151, 160, 173], [82, 92, 108])
 }
 
 pub(crate) fn hydra_bg() -> egui::Color32 {
+    if let Some(p) = active_omarchy_palette() {
+        return p.bg;
+    }
     theme_rgb([20, 24, 31], [237, 240, 244])
 }
 
 pub(crate) fn hydra_panel_fill() -> egui::Color32 {
+    if let Some(p) = active_omarchy_palette() {
+        return p.panel;
+    }
     // Slightly brighter than the page background so borderless cards still
     // read as "elevated" surfaces. With the 1px border removed, this fill
     // delta is the primary differentiator between card and page.
@@ -80,14 +114,23 @@ pub(crate) fn hydra_panel_fill() -> egui::Color32 {
 }
 
 pub(crate) fn hydra_panel_alt_fill() -> egui::Color32 {
+    if let Some(p) = active_omarchy_palette() {
+        return p.panel_alt;
+    }
     theme_rgb([38, 44, 53], [242, 245, 248])
 }
 
 pub(crate) fn hydra_panel_raised_fill() -> egui::Color32 {
+    if let Some(p) = active_omarchy_palette() {
+        return p.panel_raised;
+    }
     theme_rgb([47, 55, 65], [233, 237, 242])
 }
 
 pub(crate) fn hydra_border() -> egui::Color32 {
+    if let Some(p) = active_omarchy_palette() {
+        return p.border;
+    }
     theme_rgb([66, 76, 89], [208, 215, 224])
 }
 
@@ -567,12 +610,40 @@ pub(crate) fn hydra_heading(text: impl Into<String>, size: f32) -> egui::RichTex
         .strong()
 }
 
+/// Resolves `UiTheme::System` to a concrete `Dark`/`Light`, and sets or
+/// clears `ACTIVE_OMARCHY_PALETTE` as a side effect — the one place that
+/// decides whether "Match System" means "Omarchy's actual palette" or
+/// "just follow the OS's light/dark signal" this frame. A no-op for an
+/// already-concrete `Dark`/`Light` beyond clearing the override, since
+/// picking one of those directly always means Focalors' own built-in
+/// look, never Omarchy's.
+pub(crate) fn resolve_system_theme(ctx: &egui::Context, theme: UiTheme) -> UiTheme {
+    if theme != UiTheme::System {
+        *ACTIVE_OMARCHY_PALETTE.lock().unwrap() = None;
+        return theme;
+    }
+
+    if let Some(palette) = omarchy::read_palette() {
+        let resolved = if palette.is_light { UiTheme::Light } else { UiTheme::Dark };
+        *ACTIVE_OMARCHY_PALETTE.lock().unwrap() = Some(palette);
+        return resolved;
+    }
+
+    *ACTIVE_OMARCHY_PALETTE.lock().unwrap() = None;
+    match ctx.system_theme() {
+        Some(egui::Theme::Dark) => UiTheme::Dark,
+        Some(egui::Theme::Light) | None => UiTheme::Light,
+    }
+}
+
 pub(crate) fn configure_theme(ctx: &egui::Context, theme: UiTheme) {
+    let theme = resolve_system_theme(ctx, theme);
     ACTIVE_THEME.store(theme.index(), Ordering::Relaxed);
 
     let mut visuals = match theme {
         UiTheme::Dark => egui::Visuals::dark(),
         UiTheme::Light => egui::Visuals::light(),
+        UiTheme::System => unreachable!("resolve_system_theme never returns System"),
     };
     visuals.override_text_color = Some(hydra_text());
     visuals.panel_fill = hydra_bg();
