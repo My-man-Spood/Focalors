@@ -1602,8 +1602,18 @@ impl eframe::App for FocalorsApp {
             (show_home_screen, mode_label, state.search_info.searching)
         };
 
-        // Request repaint periodically for live updates
-        let repaint_after = if self.has_running_local_clock() { 100 } else { 200 };
+        // Request repaint periodically for live updates — but not several
+        // times a second while the window isn't even focused. There's no
+        // reason to wake up 5-10x/sec for a turn-based game nobody is
+        // looking at.
+        let focused = ctx.input(|i| i.focused);
+        let repaint_after = if !focused {
+            2000
+        } else if self.has_running_local_clock() {
+            100
+        } else {
+            200
+        };
         ctx.request_repaint_after(Duration::from_millis(repaint_after));
 
         // Welcome dialog (first launch) — skip all other content
