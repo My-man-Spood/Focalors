@@ -1,5 +1,68 @@
 use super::*;
 
+/// How deep Game Review searches every position of a game. Depth is the only
+/// knob there is: each extra ply costs roughly twice the time of the one
+/// before, so the choice is waiting time against the last few centipawns.
+/// Standard is the depth every review ran at before this was a choice.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum AnalysisQuality {
+    Quick,
+    Standard,
+    Deep,
+}
+
+impl AnalysisQuality {
+    /// Display order of the choice in Game Review.
+    pub(crate) const ALL: [AnalysisQuality; 3] = [
+        AnalysisQuality::Quick,
+        AnalysisQuality::Standard,
+        AnalysisQuality::Deep,
+    ];
+
+    /// Search depth handed to `analysis::analyze_game`.
+    pub(crate) fn depth(self) -> u32 {
+        match self {
+            AnalysisQuality::Quick => 12,
+            AnalysisQuality::Standard => 14,
+            AnalysisQuality::Deep => 18,
+        }
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            AnalysisQuality::Quick => "Quick",
+            AnalysisQuality::Standard => "Standard",
+            AnalysisQuality::Deep => "Deep",
+        }
+    }
+
+    /// One line under the choice: the trade-off in plain words.
+    pub(crate) fn hint(self) -> &'static str {
+        match self {
+            AnalysisQuality::Quick => "A rougher grade in a fraction of the time.",
+            AnalysisQuality::Standard => "Reliable grades that finish while you wait. The usual choice.",
+            AnalysisQuality::Deep => "Finer evaluations on every move, several times slower.",
+        }
+    }
+
+    /// String form persisted to settings.toml.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            AnalysisQuality::Quick => "quick",
+            AnalysisQuality::Standard => "standard",
+            AnalysisQuality::Deep => "deep",
+        }
+    }
+
+    /// Inverse of `as_str`. Unknown values fall back to Standard.
+    pub(crate) fn from_str(s: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|quality| quality.as_str() == s)
+            .unwrap_or(AnalysisQuality::Standard)
+    }
+}
+
 impl FocalorsApp {
     pub(crate) fn save_completed_game(&mut self) {
         let db = match &self.db {
@@ -743,6 +806,21 @@ impl FocalorsApp {
             None
         };
 
+        // Theoretical-line preview: hovering a continuation token sets
+        // `review_preview_ply` for next frame (captured further down, after
+        // the continuation row renders) — one-frame-lagged like the
+        // move-list click handling below, since the board draws before the
+        // continuation row this frame does.
+        let preview_board: Option<Board> = self.review_preview_ply.and_then(|ply| {
+            if cursor == 0 {
+                return None;
+            }
+            let before = self.replay_game.as_ref()?.boards.get(cursor - 1)?;
+            let ma = analysis_for_this_game.as_ref()?.moves.get(cursor - 1)?;
+            crate::analysis::replay_pv(before, &ma.pv, ply + 1)
+        });
+        let is_previewing = preview_board.is_some();
+
         // Keyboard navigation
         let (key_left, key_right, key_home, key_end) = ui.ctx().input(|i| {
             (
@@ -769,6 +847,10 @@ impl FocalorsApp {
         let mut want_close = false;
         let mut want_analyze = false;
         let mut pick_quality: Option<AnalysisQuality> = None;
+        // Captured while rendering the continuation row further down;
+        // written to `self.review_preview_ply` after the closures (see
+        // "Apply state mutations"), to take effect next frame.
+        let mut hovered_ply: Option<usize> = None;
 
         // ── Header strip ────────────────────────────────────────────────
         ui.horizontal(|ui| {
@@ -816,10 +898,15 @@ impl FocalorsApp {
             ui.vertical(|ui| {
                 ui.set_max_width(board_w);
                 let view = BoardView {
-                    board: &board,
-                    last_move,
+                    board: preview_board.as_ref().unwrap_or(&board),
+                    // The played-move arrow and classification badge apply
+                    // to the real position; showing them over a hypothetical
+                    // one would misattribute them to a move that never
+                    // happened here.
+                    last_move: if is_previewing { None } else { last_move },
                     interactive: false,
-                    review: review_overlay,
+                    review: if is_previewing { None } else { review_overlay },
+                    preview: is_previewing,
                 };
                 // Orient the review board to the reviewed player, but only for
                 // this draw: save and restore the shared `self.flipped` so that
@@ -866,9 +953,15 @@ impl FocalorsApp {
             ui.vertical(|ui| {
                 ui.set_max_width(right_w);
                 let card_h = board_w + 28.0;
-                // Everything except the move list is roughly 350px tall;
-                // the list gets whatever is left under the board's edge.
-                let list_h = (card_h - 36.0 - 350.0).clamp(120.0, 400.0);
+                // Everything except the move list is roughly 480px tall
+                // (accuracy + move-quality row, eval graph, the
+                // analysis/re-analyze header, coach note, and the
+                // continuation box) — the list gets whatever is left under
+                // the board's edge. Underestimating this is what pushes the
+                // card taller than the board and forces the whole page to
+                // scroll instead of just the move list, which already has
+                // its own scrollbar for exactly this reason.
+                let list_h = (card_h - 36.0 - 480.0).clamp(120.0, 400.0);
                 let running = matches!(
                     *self.analysis_state.lock().unwrap(),
                     AnalysisState::Running { .. }
@@ -878,6 +971,31 @@ impl FocalorsApp {
                     ui.set_min_height(card_h - 36.0);
 
                     if let Some(ref ga) = analysis_for_this_game {
+                        ui.horizontal(|ui| {
+                            ui.label(hydra_heading("ANALYSIS", 10.0).color(hydra_subtle_text()));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                // Re-runs at whichever depth is picked here —
+                                // not silently whatever was last selected
+                                // elsewhere, since Quick/Standard/Deep can be
+                                // a huge time difference. Also how an older
+                                // saved analysis (from before a field
+                                // existed, e.g. the continuation line) picks
+                                // up what it's missing — nothing backfills
+                                // old rows automatically.
+                                if ui.small_button("Re-analyze").clicked() {
+                                    want_analyze = true;
+                                }
+                                for quality in AnalysisQuality::ALL.iter().rev() {
+                                    let selected = self.analysis_quality == *quality;
+                                    if ui.add(home_nav_button(selected, quality.label())).clicked()
+                                        && !selected
+                                    {
+                                        pick_quality = Some(*quality);
+                                    }
+                                }
+                            });
+                        });
+                        ui.add_space(4.0);
                         // Accuracy next to the classification counts.
                         let mut counts = [0u32; 6];
                         for m in &ga.moves {
@@ -1149,10 +1267,10 @@ impl FocalorsApp {
                                 )
                                 .wrap(),
                             );
-                            // Rich in-session explanation (hanging pieces, the
-                            // engine line). Not persisted, so only fresh
-                            // analyses have it; the coach line above always
-                            // shows either way.
+                            // Rich in-session explanation (hanging pieces,
+                            // eval-component swings). Not persisted, so only
+                            // fresh analyses have it; the coach line above
+                            // always shows either way.
                             if let Some(ref expl) = ma.explanation {
                                 ui.add_space(4.0);
                                 ui.add(
@@ -1180,6 +1298,100 @@ impl FocalorsApp {
                                 )
                                 .wrap(),
                             );
+
+                            // The engine's expected continuation — shown for
+                            // every move, including ones you already played
+                            // best, since "what happens next" is useful
+                            // either way. Persisted (see MoveAnalysis::pv),
+                            // so unlike the explanation above this survives
+                            // a restart. Hovering a move previews it on the
+                            // board (captured here, applied next frame).
+                            if !ma.pv.is_empty()
+                                && let Some(before) = self
+                                    .replay_game
+                                    .as_ref()
+                                    .and_then(|r| r.boards.get(new_cursor - 1))
+                            {
+                                ui.add_space(SECTION_GAP);
+                                let pv_san = crate::analysis::pv_to_san(before, &ma.pv, 10);
+                                // One grayish box for the whole continuation,
+                                // not the page background: black piece icons
+                                // vanished on dark theme and white ones would
+                                // vanish on light theme otherwise — same
+                                // reason the board itself has light AND dark
+                                // squares rather than one color. Fixed,
+                                // theme-independent tones throughout (not
+                                // hydra_*), since this box deliberately
+                                // doesn't follow the page's own theme.
+                                egui::Frame::new()
+                                    .fill(egui::Color32::from_gray(190))
+                                    .corner_radius(6)
+                                    .inner_margin(egui::Margin::same(8))
+                                    .show(ui, |ui| {
+                                        ui.label(
+                                            hydra_heading("CONTINUATION", 10.0)
+                                                .color(egui::Color32::from_gray(70)),
+                                        );
+                                        ui.add_space(2.0);
+                                        ui.horizontal_wrapped(|ui| {
+                                            // No gap between tokens: a visual
+                                            // arrow separator used to leave a
+                                            // dead zone the mouse had to cross
+                                            // between moves, which flickered
+                                            // the preview back to the real
+                                            // board every time. Each token's
+                                            // own trailing space (inside its
+                                            // closure below) gives the
+                                            // readability back without
+                                            // reintroducing a gap that
+                                            // belongs to neither move.
+                                            ui.spacing_mut().item_spacing.x = 0.0;
+                                            for (i, (san, color, piece)) in
+                                                pv_san.iter().enumerate()
+                                            {
+                                                let inner = ui.horizontal(|ui| {
+                                                    ui.spacing_mut().item_spacing.x = 3.0;
+                                                    if let Some(texture) = self
+                                                        .small_piece_texture(*color, *piece)
+                                                    {
+                                                        let (icon_rect, _) = ui.allocate_exact_size(
+                                                            egui::vec2(13.0, 13.0),
+                                                            egui::Sense::hover(),
+                                                        );
+                                                        draw_piece_image(
+                                                            ui.painter(),
+                                                            texture,
+                                                            icon_rect,
+                                                        );
+                                                    }
+                                                    ui.label(
+                                                        egui::RichText::new(san)
+                                                            .size(11.5)
+                                                            .strong()
+                                                            .color(egui::Color32::BLACK),
+                                                    );
+                                                    ui.add_space(6.0);
+                                                });
+                                                let resp = ui.interact(
+                                                    inner.response.rect,
+                                                    ui.id().with(("continuation_ply", i)),
+                                                    egui::Sense::hover(),
+                                                );
+                                                if resp.hovered() {
+                                                    hovered_ply = Some(i);
+                                                }
+                                            }
+                                        });
+                                        ui.add_space(2.0);
+                                        ui.label(
+                                            egui::RichText::new(
+                                                "Hover a move to preview it on the board.",
+                                            )
+                                            .size(10.0)
+                                            .color(egui::Color32::from_gray(90)),
+                                        );
+                                    });
+                            }
                         } else {
                             ui.label(hydra_heading("COACH", 10.0).color(hydra_subtle_text()));
                             ui.add_space(2.0);
@@ -1195,6 +1407,7 @@ impl FocalorsApp {
         });
 
         // Apply state mutations after the closures
+        self.review_preview_ply = hovered_ply;
         let mut review_sfx: Option<crate::sound::Sfx> = None;
         if new_cursor != cursor {
             if let Some(r) = self.replay_game.as_mut() {

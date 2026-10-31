@@ -1,5 +1,60 @@
 use super::*;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UiTheme {
+    Dark,
+    Light,
+    /// Follows the OS's light/dark signal. On Omarchy specifically, also
+    /// adopts Omarchy's actual accent/background palette instead of just
+    /// picking between Focalors' own built-in Dark/Light looks — see
+    /// `gui/omarchy.rs` and `resolve_system_theme`.
+    System,
+}
+
+impl UiTheme {
+    /// Used by the quick top-bar toggle, which is a plain two-way switch:
+    /// clicking it while on `System` overrides to the opposite of
+    /// whatever System is *currently* resolving to — not a hardcoded
+    /// guess, since System showing as effectively dark and "toggling" to
+    /// dark again would be a no-op the button didn't advertise.
+    pub(crate) fn toggle(self) -> Self {
+        match self {
+            UiTheme::Dark => UiTheme::Light,
+            UiTheme::Light => UiTheme::Dark,
+            UiTheme::System => current_theme().toggle(),
+        }
+    }
+
+    /// Only ever called with a *resolved* Dark/Light (never `System` —
+    /// callers resolve first), so the `System` arm is just a defensive
+    /// default and never actually reached in practice.
+    pub(crate) fn index(self) -> u8 {
+        match self {
+            UiTheme::Dark | UiTheme::System => 0,
+            UiTheme::Light => 1,
+        }
+    }
+
+    /// String form persisted to settings.toml.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            UiTheme::Dark => "dark",
+            UiTheme::Light => "light",
+            UiTheme::System => "system",
+        }
+    }
+
+    /// Inverse of `as_str`. Unknown values fall back to Light so a
+    /// corrupted or older settings file doesn't break startup.
+    pub(crate) fn from_str(s: &str) -> Self {
+        match s {
+            "dark" => UiTheme::Dark,
+            "system" => UiTheme::System,
+            _ => UiTheme::Light,
+        }
+    }
+}
+
 pub(crate) fn current_theme() -> UiTheme {
     match ACTIVE_THEME.load(Ordering::Relaxed) {
         1 => UiTheme::Light,

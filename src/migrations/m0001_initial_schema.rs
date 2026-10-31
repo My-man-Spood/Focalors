@@ -22,7 +22,7 @@ impl Migration for M {
         "initial_schema"
     }
 
-    fn up(&self, conn: &Connection) -> SqlResult<()> {
+    fn up(&self, conn: &Connection, _settings_path: &std::path::Path) -> SqlResult<()> {
         conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS user_profile (
@@ -100,7 +100,7 @@ impl Migration for M {
         )
     }
 
-    fn down(&self, conn: &Connection) -> SqlResult<()> {
+    fn down(&self, conn: &Connection, _settings_path: &std::path::Path) -> SqlResult<()> {
         conn.execute_batch(
             "
             DROP TABLE IF EXISTS puzzles;

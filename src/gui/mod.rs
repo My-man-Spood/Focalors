@@ -30,6 +30,8 @@ use board_render::*;
 use game_state::*;
 use omarchy::OmarchyPalette;
 use style::*;
+use home::{LocalDifficulty, SideChoice, TimePreset};
+use review::AnalysisQuality;
 
 // ════════════════════════════════════════════════════════════════════════════
 // Shared state between GUI and background threads
@@ -96,109 +98,6 @@ impl Default for SearchInfo {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum SideChoice {
-    White,
-    Black,
-    Random,
-}
-
-impl SideChoice {
-    fn resolve(self) -> Color {
-        match self {
-            SideChoice::White => Color::White,
-            SideChoice::Black => Color::Black,
-            SideChoice::Random => {
-                let nanos = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.subsec_nanos())
-                    .unwrap_or(0);
-                if nanos % 2 == 0 {
-                    Color::White
-                } else {
-                    Color::Black
-                }
-            }
-        }
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum TimePreset {
-    Bullet1_0,
-    Bullet2_1,
-    Blitz3_0,
-    Blitz5_0,
-    Blitz5_3,
-    Rapid10_0,
-    Rapid15_10,
-    Classical30_0,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum LocalDifficulty {
-    Beginner,
-    Club,
-    Tournament,
-    Master,
-    Adaptive,
-    Custom,
-}
-
-impl LocalDifficulty {
-    const ALL: [LocalDifficulty; 6] = [
-        LocalDifficulty::Beginner,
-        LocalDifficulty::Club,
-        LocalDifficulty::Tournament,
-        LocalDifficulty::Master,
-        LocalDifficulty::Adaptive,
-        LocalDifficulty::Custom,
-    ];
-
-    fn label(self) -> &'static str {
-        match self {
-            LocalDifficulty::Beginner => "Beginner",
-            LocalDifficulty::Club => "Club",
-            LocalDifficulty::Tournament => "Tournament",
-            LocalDifficulty::Master => "Master",
-            LocalDifficulty::Adaptive => "Adaptive",
-            LocalDifficulty::Custom => "Custom",
-        }
-    }
-
-    fn numeric_level(self, adaptive_level: u32) -> u32 {
-        match self {
-            LocalDifficulty::Beginner => crate::strength::BEGINNER_LEVEL,
-            LocalDifficulty::Club => crate::strength::CLUB_LEVEL,
-            LocalDifficulty::Tournament => crate::strength::TOURNAMENT_LEVEL,
-            LocalDifficulty::Master => crate::strength::MASTER_LEVEL,
-            LocalDifficulty::Adaptive => adaptive_level,
-            LocalDifficulty::Custom => crate::strength::MASTER_LEVEL,
-        }
-    }
-
-    fn description(self, adaptive_level: u32) -> String {
-        match self {
-            LocalDifficulty::Beginner => "Fast, forgiving replies with shallow calculation.".into(),
-            LocalDifficulty::Club => "Solid club-level play with restrained search depth.".into(),
-            LocalDifficulty::Tournament => "Balanced default strength for serious local games.".into(),
-            LocalDifficulty::Master => "Focalors' strongest local profile with deeper search.".into(),
-            LocalDifficulty::Adaptive => format!(
-                "Auto-adjusts to your level. Currently Level {} (~{} Elo).",
-                adaptive_level,
-                crate::strength::estimated_elo(adaptive_level),
-            ),
-            LocalDifficulty::Custom => "Thinks for a fixed time or to a fixed depth per move. Set it up under Advanced.".into(),
-        }
-    }
-}
-
-impl Default for LocalDifficulty {
-    fn default() -> Self {
-        Self::Tournament
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
 enum HomePage {
     Overview,
     Analyze,
@@ -206,61 +105,6 @@ enum HomePage {
     Statistics,
     History,
     Puzzles,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum UiTheme {
-    Dark,
-    Light,
-    /// Follows the OS's light/dark signal. On Omarchy specifically, also
-    /// adopts Omarchy's actual accent/background palette instead of just
-    /// picking between Focalors' own built-in Dark/Light looks — see
-    /// `gui/omarchy.rs` and `resolve_system_theme`.
-    System,
-}
-
-impl UiTheme {
-    /// Used by the quick top-bar toggle, which is a plain two-way switch:
-    /// clicking it while on `System` overrides to the opposite of
-    /// whatever System is *currently* resolving to — not a hardcoded
-    /// guess, since System showing as effectively dark and "toggling" to
-    /// dark again would be a no-op the button didn't advertise.
-    fn toggle(self) -> Self {
-        match self {
-            UiTheme::Dark => UiTheme::Light,
-            UiTheme::Light => UiTheme::Dark,
-            UiTheme::System => current_theme().toggle(),
-        }
-    }
-
-    /// Only ever called with a *resolved* Dark/Light (never `System` —
-    /// callers resolve first), so the `System` arm is just a defensive
-    /// default and never actually reached in practice.
-    fn index(self) -> u8 {
-        match self {
-            UiTheme::Dark | UiTheme::System => 0,
-            UiTheme::Light => 1,
-        }
-    }
-
-    /// String form persisted to settings.toml.
-    fn as_db_str(self) -> &'static str {
-        match self {
-            UiTheme::Dark => "dark",
-            UiTheme::Light => "light",
-            UiTheme::System => "system",
-        }
-    }
-
-    /// Inverse of `as_db_str`. Unknown values fall back to Light so a
-    /// corrupted or older settings file doesn't break startup.
-    fn from_db_str(s: &str) -> Self {
-        match s {
-            "dark" => UiTheme::Dark,
-            "system" => UiTheme::System,
-            _ => UiTheme::Light,
-        }
-    }
 }
 
 static ACTIVE_THEME: AtomicU8 = AtomicU8::new(0);
@@ -273,122 +117,6 @@ static ACTIVE_THEME: AtomicU8 = AtomicU8::new(0);
 /// byte, but it's read far more than it's written, so contention is a
 /// non-issue.
 static ACTIVE_OMARCHY_PALETTE: Mutex<Option<OmarchyPalette>> = Mutex::new(None);
-
-/// Board color preset, picked in Settings. Only the two square colors differ
-/// between presets: the selection and last-move highlights are the same gold
-/// on every board, and the legal-move tint is derived from the squares.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum BoardTheme {
-    Walnut,
-    Maple,
-    Forest,
-    Glacier,
-    Hydro,
-    Indigo,
-    Slate,
-    Rosewood,
-}
-
-impl BoardTheme {
-    /// Display order of the Settings swatch grid. Must follow the
-    /// declaration order, since `index` is the discriminant.
-    const ALL: [BoardTheme; 8] = [
-        BoardTheme::Walnut,
-        BoardTheme::Maple,
-        BoardTheme::Forest,
-        BoardTheme::Glacier,
-        BoardTheme::Hydro,
-        BoardTheme::Indigo,
-        BoardTheme::Slate,
-        BoardTheme::Rosewood,
-    ];
-
-    fn index(self) -> u8 {
-        self as u8
-    }
-
-    /// Inverse of `index`. Out-of-range values fall back to Walnut.
-    fn from_index(index: u8) -> Self {
-        Self::ALL
-            .get(index as usize)
-            .copied()
-            .unwrap_or(BoardTheme::Walnut)
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            BoardTheme::Walnut => "Walnut",
-            BoardTheme::Maple => "Maple",
-            BoardTheme::Forest => "Forest",
-            BoardTheme::Glacier => "Glacier",
-            BoardTheme::Hydro => "Hydro",
-            BoardTheme::Indigo => "Indigo",
-            BoardTheme::Slate => "Slate",
-            BoardTheme::Rosewood => "Rosewood",
-        }
-    }
-
-    /// String form persisted to the SQLite user_profile.board_theme column.
-    fn as_db_str(self) -> &'static str {
-        match self {
-            BoardTheme::Walnut => "walnut",
-            BoardTheme::Maple => "maple",
-            BoardTheme::Forest => "forest",
-            BoardTheme::Glacier => "glacier",
-            BoardTheme::Hydro => "hydro",
-            BoardTheme::Indigo => "indigo",
-            BoardTheme::Slate => "slate",
-            BoardTheme::Rosewood => "rosewood",
-        }
-    }
-
-    /// Inverse of `as_db_str`. Unknown values fall back to Walnut so a
-    /// corrupted row, or a preset written by a newer version, doesn't
-    /// break startup.
-    fn from_db_str(s: &str) -> Self {
-        Self::ALL
-            .into_iter()
-            .find(|theme| theme.as_db_str() == s)
-            .unwrap_or(BoardTheme::Walnut)
-    }
-
-    /// (light square, dark square).
-    fn squares(self) -> (egui::Color32, egui::Color32) {
-        let rgb = egui::Color32::from_rgb;
-        match self {
-            BoardTheme::Walnut => (rgb(227, 218, 201), rgb(120, 99, 81)),
-            BoardTheme::Maple => (rgb(240, 217, 181), rgb(181, 136, 99)),
-            BoardTheme::Forest => (rgb(235, 236, 208), rgb(115, 149, 82)),
-            BoardTheme::Glacier => (rgb(222, 227, 230), rgb(140, 162, 173)),
-            BoardTheme::Hydro => (rgb(221, 238, 236), rgb(72, 138, 152)),
-            BoardTheme::Indigo => (rgb(226, 230, 246), rgb(108, 124, 192)),
-            BoardTheme::Slate => (rgb(216, 219, 224), rgb(118, 126, 138)),
-            BoardTheme::Rosewood => (rgb(236, 216, 200), rgb(152, 88, 74)),
-        }
-    }
-
-    fn palette(self) -> BoardPalette {
-        let (light, dark) = self.squares();
-        // Squares the selected piece can move to get one flat tone between
-        // the two square colors, a little nearer the dark one. Walnut keeps
-        // the exact taupe it always had rather than the computed value.
-        let legal = match self {
-            BoardTheme::Walnut => egui::Color32::from_rgb(168, 149, 126),
-            _ => mix_rgb(light, dark, 0.55),
-        };
-        BoardPalette { light, dark, legal }
-    }
-}
-
-/// The colors a board theme contributes to `draw_board`, the History
-/// thumbnails and the Settings preview.
-#[derive(Clone, Copy)]
-struct BoardPalette {
-    light: egui::Color32,
-    dark: egui::Color32,
-    /// Fill for squares the selected piece can move to.
-    legal: egui::Color32,
-}
 
 // Highlight colors shared by every board theme. They are the exact colors
 // the walnut board showed in dark mode back when the highlights were
@@ -403,20 +131,6 @@ const BOARD_LEGAL_DOT: egui::Color32 = egui::Color32::from_rgb(255, 255, 253);
 
 static ACTIVE_BOARD_THEME: AtomicU8 = AtomicU8::new(0);
 
-fn active_board_theme() -> BoardTheme {
-    BoardTheme::from_index(ACTIVE_BOARD_THEME.load(Ordering::Relaxed))
-}
-
-/// Linear blend of two opaque colors: `t` = 0 gives `a`, `t` = 1 gives `b`.
-fn mix_rgb(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
-    let channel = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
-    egui::Color32::from_rgb(
-        channel(a.r(), b.r()),
-        channel(a.g(), b.g()),
-        channel(a.b(), b.b()),
-    )
-}
-
 /// Position shown in the Settings window's board preview: a Ruy Lopez after
 /// 3...Nf6, so both colors have pieces off their home squares.
 const SETTINGS_PREVIEW_FEN: &str =
@@ -425,164 +139,6 @@ const SETTINGS_PREVIEW_FEN: &str =
 /// with the last-move highlight.
 const SETTINGS_PREVIEW_LAST_MOVE: [u8; 2] = [62, 45];
 
-/// Piece graphics set, picked in Settings. Every set ships the same twelve
-/// 128px PNGs (rasterized from the SVGs beside them in `assets/pieces/`),
-/// so the board code draws any of them the same way.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-enum PieceSet {
-    Cburnett,
-    Rhosgfx,
-}
-
-impl PieceSet {
-    /// Display order of the Settings swatches.
-    const ALL: [PieceSet; 2] = [PieceSet::Cburnett, PieceSet::Rhosgfx];
-
-    fn label(self) -> &'static str {
-        match self {
-            PieceSet::Cburnett => "Cburnett",
-            PieceSet::Rhosgfx => "RhosGFX",
-        }
-    }
-
-    /// String form persisted to the SQLite user_profile.piece_set column.
-    /// Doubles as the set's directory name under `assets/pieces/`.
-    fn as_db_str(self) -> &'static str {
-        match self {
-            PieceSet::Cburnett => "cburnett",
-            PieceSet::Rhosgfx => "rhosgfx",
-        }
-    }
-
-    /// Inverse of `as_db_str`. Unknown values fall back to Cburnett, the set
-    /// every board showed before sets became a choice.
-    fn from_db_str(s: &str) -> Self {
-        Self::ALL
-            .into_iter()
-            .find(|set| set.as_db_str() == s)
-            .unwrap_or(PieceSet::Cburnett)
-    }
-
-    /// The set's twelve embedded images: (side, piece, texture name, PNG
-    /// bytes), white first, king to pawn.
-    fn images(self) -> &'static [(Color, Piece, &'static str, &'static [u8]); 12] {
-        match self {
-            PieceSet::Cburnett => &CBURNETT_IMAGES,
-            PieceSet::Rhosgfx => &RHOSGFX_IMAGES,
-        }
-    }
-}
-
-/// How deep Game Review searches every position of a game. Depth is the only
-/// knob there is: each extra ply costs roughly twice the time of the one
-/// before, so the choice is waiting time against the last few centipawns.
-/// Standard is the depth every review ran at before this was a choice.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum AnalysisQuality {
-    Quick,
-    Standard,
-    Deep,
-}
-
-impl AnalysisQuality {
-    /// Display order of the choice in Game Review.
-    const ALL: [AnalysisQuality; 3] = [
-        AnalysisQuality::Quick,
-        AnalysisQuality::Standard,
-        AnalysisQuality::Deep,
-    ];
-
-    /// Search depth handed to `analysis::analyze_game`.
-    fn depth(self) -> u32 {
-        match self {
-            AnalysisQuality::Quick => 12,
-            AnalysisQuality::Standard => 14,
-            AnalysisQuality::Deep => 18,
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            AnalysisQuality::Quick => "Quick",
-            AnalysisQuality::Standard => "Standard",
-            AnalysisQuality::Deep => "Deep",
-        }
-    }
-
-    /// One line under the choice: the trade-off in plain words.
-    fn hint(self) -> &'static str {
-        match self {
-            AnalysisQuality::Quick => "A rougher grade in a fraction of the time.",
-            AnalysisQuality::Standard => "Reliable grades that finish while you wait. The usual choice.",
-            AnalysisQuality::Deep => "Finer evaluations on every move, several times slower.",
-        }
-    }
-
-    /// String form persisted to the SQLite user_profile.analysis_quality column.
-    fn as_db_str(self) -> &'static str {
-        match self {
-            AnalysisQuality::Quick => "quick",
-            AnalysisQuality::Standard => "standard",
-            AnalysisQuality::Deep => "deep",
-        }
-    }
-
-    /// Inverse of `as_db_str`. Unknown values fall back to Standard.
-    fn from_db_str(s: &str) -> Self {
-        Self::ALL
-            .into_iter()
-            .find(|quality| quality.as_db_str() == s)
-            .unwrap_or(AnalysisQuality::Standard)
-    }
-}
-
-impl TimePreset {
-    const ALL: [TimePreset; 8] = [
-        TimePreset::Bullet1_0,
-        TimePreset::Bullet2_1,
-        TimePreset::Blitz3_0,
-        TimePreset::Blitz5_0,
-        TimePreset::Blitz5_3,
-        TimePreset::Rapid10_0,
-        TimePreset::Rapid15_10,
-        TimePreset::Classical30_0,
-    ];
-
-    fn label(self) -> &'static str {
-        match self {
-            TimePreset::Bullet1_0 => "1+0",
-            TimePreset::Bullet2_1 => "2+1",
-            TimePreset::Blitz3_0 => "3+0",
-            TimePreset::Blitz5_0 => "5+0",
-            TimePreset::Blitz5_3 => "5+3",
-            TimePreset::Rapid10_0 => "10+0",
-            TimePreset::Rapid15_10 => "15+10",
-            TimePreset::Classical30_0 => "30+0",
-        }
-    }
-
-    fn initial_ms(self) -> u64 {
-        match self {
-            TimePreset::Bullet1_0 => 60_000,
-            TimePreset::Bullet2_1 => 120_000,
-            TimePreset::Blitz3_0 => 180_000,
-            TimePreset::Blitz5_0 => 300_000,
-            TimePreset::Blitz5_3 => 300_000,
-            TimePreset::Rapid10_0 => 600_000,
-            TimePreset::Rapid15_10 => 900_000,
-            TimePreset::Classical30_0 => 1_800_000,
-        }
-    }
-
-    fn increment_ms(self) -> u64 {
-        match self {
-            TimePreset::Bullet2_1 => 1_000,
-            TimePreset::Blitz5_3 => 3_000,
-            TimePreset::Rapid15_10 => 10_000,
-            _ => 0,
-        }
-    }
-}
 
 #[derive(Clone)]
 struct TimeControl {
@@ -844,6 +400,10 @@ pub(crate) struct BoardView<'a> {
     /// Game Review overlay: best-move and played-move arrows for the move that
     /// produced this position. `None` for live play / anything non-review.
     review: Option<ReviewOverlay>,
+    /// Showing a hypothetical position from hovering a continuation move,
+    /// not the real game state — draw_board marks the board shell so it's
+    /// never mistaken for "this actually happened."
+    preview: bool,
 }
 
 /// Overlay drawn on the read-only Game Review board for the move that produced
@@ -958,6 +518,13 @@ pub struct FocalorsApp {
     replay_game: Option<ReplayState>,
     analysis_state: Arc<Mutex<AnalysisState>>,
     analysis_review_cursor: usize, // which move is selected in review
+    /// Set for one frame when the previous frame's continuation row had a
+    /// ply hovered — swaps the review board for that hypothetical position
+    /// instead of the real one. One-frame-lagged like every other
+    /// cross-section dependency in `draw_analyze_page` (e.g. move-list
+    /// clicks vs. the board), since the continuation row renders after the
+    /// board does.
+    review_preview_ply: Option<usize>,
     /// If set, completed analysis should be persisted against this game id
     /// instead of the most-recent-game fallback.
     analysis_target_game_id: Option<i64>,
@@ -1122,7 +689,7 @@ struct PieceTextures {
 }
 
 fn load_piece_set(ctx: &egui::Context, set: PieceSet) -> PieceTextures {
-    let dir = set.as_db_str();
+    let dir = set.as_str();
     let mut full = HashMap::new();
     let mut small = HashMap::new();
     for &(color, piece, name, data) in set.images() {
@@ -1143,6 +710,12 @@ impl FocalorsApp {
         // Theme is configured below once the DB has been opened and the
         // persisted preference loaded — so the very first frame already
         // reflects the user's saved choice instead of always being Light.
+
+        // Diagnostic for the "settings keep resetting" investigation: if
+        // eframe ever recreates the app within one process (a renderer
+        // retry, a context loss), each call re-runs pending migrations —
+        // this line proves whether that's happening.
+        crate::settings::log_event("FocalorsApp::new() called");
 
         let state = Arc::new(Mutex::new(SharedState::default()));
 
@@ -1196,15 +769,15 @@ impl FocalorsApp {
         let loaded_settings = crate::settings::load();
 
         // Applied to egui's visuals before the first frame.
-        let ui_theme = UiTheme::from_db_str(&loaded_settings.ui_theme);
+        let ui_theme = UiTheme::from_str(&loaded_settings.ui_theme);
         configure_theme(&cc.egui_ctx, ui_theme);
 
         // Applied through a process-wide atomic, like the UI theme.
-        let board_theme = BoardTheme::from_db_str(&loaded_settings.board_theme);
+        let board_theme = BoardTheme::from_str(&loaded_settings.board_theme);
         ACTIVE_BOARD_THEME.store(board_theme.index(), Ordering::Relaxed);
 
-        let piece_set = PieceSet::from_db_str(&loaded_settings.piece_set);
-        let analysis_quality = AnalysisQuality::from_db_str(&loaded_settings.analysis_quality);
+        let piece_set = PieceSet::from_str(&loaded_settings.piece_set);
+        let analysis_quality = AnalysisQuality::from_str(&loaded_settings.analysis_quality);
         let sfx_volume = loaded_settings.sfx_volume as f32;
 
         // Loaded before the first search can start, so a saved Custom
@@ -1238,6 +811,7 @@ impl FocalorsApp {
             replay_game: None,
             analysis_state: Arc::new(Mutex::new(AnalysisState::Idle)),
             analysis_review_cursor: 0,
+            review_preview_ply: None,
             analysis_target_game_id: None,
             analysis_generation: Arc::new(AtomicU64::new(0)),
             history_thumbnails: std::collections::HashMap::new(),
@@ -1248,9 +822,9 @@ impl FocalorsApp {
             right_drag_origin: None,
             last_annotation_board_hash: None,
             flipped: false,
-            local_side_choice: SideChoice::White,
-            local_time_preset: TimePreset::Rapid10_0,
-            local_difficulty: LocalDifficulty::default(),
+            local_side_choice: SideChoice::from_str(&loaded_settings.local_side_choice),
+            local_time_preset: TimePreset::from_str(&loaded_settings.local_time_preset),
+            local_difficulty: LocalDifficulty::from_str(&loaded_settings.local_difficulty),
             adaptive_level,
             auto_adjust_message: None,
             last_rating_change: None,
@@ -1289,19 +863,22 @@ impl FocalorsApp {
     /// TOML has no partial-update story the way `UPDATE ... SET x = ?`
     /// did, so every setter just rewrites the whole file — that's the
     /// idiomatic shape for this format, not a workaround.
-    fn save_settings(&self) {
+    fn save_settings(&self, reason: &str) {
         let engine_settings = self.state.lock().unwrap().engine_settings.clone();
         let settings = crate::settings::Settings {
-            ui_theme: self.ui_theme.as_db_str().to_string(),
-            board_theme: self.board_theme.as_db_str().to_string(),
-            piece_set: self.piece_set.as_db_str().to_string(),
-            analysis_quality: self.analysis_quality.as_db_str().to_string(),
+            ui_theme: self.ui_theme.as_str().to_string(),
+            board_theme: self.board_theme.as_str().to_string(),
+            piece_set: self.piece_set.as_str().to_string(),
+            analysis_quality: self.analysis_quality.as_str().to_string(),
             sfx_volume: self.sfx_volume as f64,
             custom_use_time_limit: engine_settings.use_time_limit,
             custom_think_time_ms: engine_settings.think_time_ms as i64,
             custom_max_depth: engine_settings.max_depth as i64,
+            local_side_choice: self.local_side_choice.as_str().to_string(),
+            local_time_preset: self.local_time_preset.as_str().to_string(),
+            local_difficulty: self.local_difficulty.as_str().to_string(),
         };
-        let _ = crate::settings::save(&settings);
+        let _ = crate::settings::save(&settings, reason);
     }
 
     fn set_sfx_volume(&mut self, volume: f32) {
@@ -1335,23 +912,23 @@ impl FocalorsApp {
         configure_theme(ctx, theme);
         // Persist so the choice survives restart. Best-effort: a transient
         // I/O hiccup writing settings.toml never breaks the toggle.
-        self.save_settings();
+        self.save_settings("set_ui_theme");
     }
 
     fn set_board_theme(&mut self, theme: BoardTheme) {
         self.board_theme = theme;
         ACTIVE_BOARD_THEME.store(theme.index(), Ordering::Relaxed);
-        self.save_settings();
+        self.save_settings("set_board_theme");
     }
 
     fn set_piece_set(&mut self, set: PieceSet) {
         self.piece_set = set;
-        self.save_settings();
+        self.save_settings("set_piece_set");
     }
 
     fn set_analysis_quality(&mut self, quality: AnalysisQuality) {
         self.analysis_quality = quality;
-        self.save_settings();
+        self.save_settings("set_analysis_quality");
     }
 
     /// Full-size image of a piece in the active set.
@@ -1478,6 +1055,10 @@ impl FocalorsApp {
         self.move_animations.clear();
         self.pending_promotion = None;
         self.flipped = human_color == Color::Black;
+        // Remember this setup for next time — saved on actually starting a
+        // game, not on every radio/dropdown click, so browsing options
+        // without starting anything doesn't touch disk.
+        self.save_settings("begin_local_game");
 
         if human_color == Color::Black {
             self.start_engine_search();
@@ -1853,11 +1434,11 @@ mod tests {
         for (i, theme) in BoardTheme::ALL.into_iter().enumerate() {
             assert_eq!(theme.index() as usize, i, "ALL must follow declaration order");
             assert_eq!(BoardTheme::from_index(theme.index()), theme);
-            assert_eq!(BoardTheme::from_db_str(theme.as_db_str()), theme);
+            assert_eq!(BoardTheme::from_str(theme.as_str()), theme);
         }
         // A corrupted row, or a preset written by a newer version, falls
         // back to the default board instead of failing.
-        assert_eq!(BoardTheme::from_db_str("neon"), BoardTheme::Walnut);
+        assert_eq!(BoardTheme::from_str("neon"), BoardTheme::Walnut);
         assert_eq!(BoardTheme::from_index(200), BoardTheme::Walnut);
 
         // The default board keeps the exact colors it had before themes.
@@ -2024,10 +1605,10 @@ mod tests {
         use super::PieceSet;
 
         for set in PieceSet::ALL {
-            assert_eq!(PieceSet::from_db_str(set.as_db_str()), set);
+            assert_eq!(PieceSet::from_str(set.as_str()), set);
         }
-        assert_eq!(PieceSet::from_db_str("sadsnake"), PieceSet::Cburnett);
-        assert_eq!(PieceSet::from_db_str(""), PieceSet::Cburnett);
+        assert_eq!(PieceSet::from_str("sadsnake"), PieceSet::Cburnett);
+        assert_eq!(PieceSet::from_str(""), PieceSet::Cburnett);
     }
 
     /// Every set embeds the same twelve pieces in the same order, each a
@@ -2070,10 +1651,10 @@ mod tests {
         use super::AnalysisQuality;
 
         for quality in AnalysisQuality::ALL {
-            assert_eq!(AnalysisQuality::from_db_str(quality.as_db_str()), quality);
+            assert_eq!(AnalysisQuality::from_str(quality.as_str()), quality);
         }
-        assert_eq!(AnalysisQuality::from_db_str("ultra"), AnalysisQuality::Standard);
-        assert_eq!(AnalysisQuality::from_db_str(""), AnalysisQuality::Standard);
+        assert_eq!(AnalysisQuality::from_str("ultra"), AnalysisQuality::Standard);
+        assert_eq!(AnalysisQuality::from_str(""), AnalysisQuality::Standard);
         // Every review before the choice existed ran at depth 14.
         assert_eq!(AnalysisQuality::Standard.depth(), 14);
         assert!(AnalysisQuality::Quick.depth() < AnalysisQuality::Standard.depth());

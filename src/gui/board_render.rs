@@ -1,5 +1,183 @@
 use super::*;
 
+/// Board color preset, picked in Settings. Only the two square colors differ
+/// between presets: the selection and last-move highlights are the same gold
+/// on every board, and the legal-move tint is derived from the squares.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum BoardTheme {
+    Walnut,
+    Maple,
+    Forest,
+    Glacier,
+    Hydro,
+    Indigo,
+    Slate,
+    Rosewood,
+}
+
+impl BoardTheme {
+    /// Display order of the Settings swatch grid. Must follow the
+    /// declaration order, since `index` is the discriminant.
+    pub(crate) const ALL: [BoardTheme; 8] = [
+        BoardTheme::Walnut,
+        BoardTheme::Maple,
+        BoardTheme::Forest,
+        BoardTheme::Glacier,
+        BoardTheme::Hydro,
+        BoardTheme::Indigo,
+        BoardTheme::Slate,
+        BoardTheme::Rosewood,
+    ];
+
+    pub(crate) fn index(self) -> u8 {
+        self as u8
+    }
+
+    /// Inverse of `index`. Out-of-range values fall back to Walnut.
+    pub(crate) fn from_index(index: u8) -> Self {
+        Self::ALL
+            .get(index as usize)
+            .copied()
+            .unwrap_or(BoardTheme::Walnut)
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            BoardTheme::Walnut => "Walnut",
+            BoardTheme::Maple => "Maple",
+            BoardTheme::Forest => "Forest",
+            BoardTheme::Glacier => "Glacier",
+            BoardTheme::Hydro => "Hydro",
+            BoardTheme::Indigo => "Indigo",
+            BoardTheme::Slate => "Slate",
+            BoardTheme::Rosewood => "Rosewood",
+        }
+    }
+
+    /// String form persisted to settings.toml.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            BoardTheme::Walnut => "walnut",
+            BoardTheme::Maple => "maple",
+            BoardTheme::Forest => "forest",
+            BoardTheme::Glacier => "glacier",
+            BoardTheme::Hydro => "hydro",
+            BoardTheme::Indigo => "indigo",
+            BoardTheme::Slate => "slate",
+            BoardTheme::Rosewood => "rosewood",
+        }
+    }
+
+    /// Inverse of `as_str`. Unknown values fall back to Walnut so a
+    /// corrupted row, or a preset written by a newer version, doesn't
+    /// break startup.
+    pub(crate) fn from_str(s: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|theme| theme.as_str() == s)
+            .unwrap_or(BoardTheme::Walnut)
+    }
+
+    /// (light square, dark square).
+    pub(crate) fn squares(self) -> (egui::Color32, egui::Color32) {
+        let rgb = egui::Color32::from_rgb;
+        match self {
+            BoardTheme::Walnut => (rgb(227, 218, 201), rgb(120, 99, 81)),
+            BoardTheme::Maple => (rgb(240, 217, 181), rgb(181, 136, 99)),
+            BoardTheme::Forest => (rgb(235, 236, 208), rgb(115, 149, 82)),
+            BoardTheme::Glacier => (rgb(222, 227, 230), rgb(140, 162, 173)),
+            BoardTheme::Hydro => (rgb(221, 238, 236), rgb(72, 138, 152)),
+            BoardTheme::Indigo => (rgb(226, 230, 246), rgb(108, 124, 192)),
+            BoardTheme::Slate => (rgb(216, 219, 224), rgb(118, 126, 138)),
+            BoardTheme::Rosewood => (rgb(236, 216, 200), rgb(152, 88, 74)),
+        }
+    }
+
+    pub(crate) fn palette(self) -> BoardPalette {
+        let (light, dark) = self.squares();
+        // Squares the selected piece can move to get one flat tone between
+        // the two square colors, a little nearer the dark one. Walnut keeps
+        // the exact taupe it always had rather than the computed value.
+        let legal = match self {
+            BoardTheme::Walnut => egui::Color32::from_rgb(168, 149, 126),
+            _ => mix_rgb(light, dark, 0.55),
+        };
+        BoardPalette { light, dark, legal }
+    }
+}
+
+/// The colors a board theme contributes to `draw_board`, the History
+/// thumbnails and the Settings preview.
+#[derive(Clone, Copy)]
+pub(crate) struct BoardPalette {
+    pub(crate) light: egui::Color32,
+    pub(crate) dark: egui::Color32,
+    /// Fill for squares the selected piece can move to.
+    pub(crate) legal: egui::Color32,
+}
+
+pub(crate) fn active_board_theme() -> BoardTheme {
+    BoardTheme::from_index(ACTIVE_BOARD_THEME.load(Ordering::Relaxed))
+}
+
+/// Linear blend of two opaque colors: `t` = 0 gives `a`, `t` = 1 gives `b`.
+fn mix_rgb(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
+    let channel = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    egui::Color32::from_rgb(
+        channel(a.r(), b.r()),
+        channel(a.g(), b.g()),
+        channel(a.b(), b.b()),
+    )
+}
+
+/// Piece graphics set, picked in Settings. Every set ships the same twelve
+/// 128px PNGs (rasterized from the SVGs beside them in `assets/pieces/`),
+/// so the board code draws any of them the same way.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) enum PieceSet {
+    Cburnett,
+    Rhosgfx,
+}
+
+impl PieceSet {
+    /// Display order of the Settings swatches.
+    pub(crate) const ALL: [PieceSet; 2] = [PieceSet::Cburnett, PieceSet::Rhosgfx];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            PieceSet::Cburnett => "Cburnett",
+            PieceSet::Rhosgfx => "RhosGFX",
+        }
+    }
+
+    /// String form persisted to settings.toml. Doubles as the set's
+    /// directory name under `assets/pieces/`.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            PieceSet::Cburnett => "cburnett",
+            PieceSet::Rhosgfx => "rhosgfx",
+        }
+    }
+
+    /// Inverse of `as_str`. Unknown values fall back to Cburnett, the set
+    /// every board showed before sets became a choice.
+    pub(crate) fn from_str(s: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|set| set.as_str() == s)
+            .unwrap_or(PieceSet::Cburnett)
+    }
+
+    /// The set's twelve embedded images: (side, piece, texture name, PNG
+    /// bytes), white first, king to pawn.
+    pub(crate) fn images(self) -> &'static [(Color, Piece, &'static str, &'static [u8]); 12] {
+        match self {
+            PieceSet::Cburnett => &CBURNETT_IMAGES,
+            PieceSet::Rhosgfx => &RHOSGFX_IMAGES,
+        }
+    }
+}
+
 pub(crate) fn uci_arrow_squares(uci: &str) -> Option<(u8, u8)> {
     if uci.len() < 4 {
         return None;

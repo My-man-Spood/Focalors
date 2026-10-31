@@ -258,6 +258,13 @@ pub struct MoveAnalysis {
     pub cpl: Score,             // centipawn loss (always >= 0)
     pub classification: MoveClass,
     pub explanation: Option<String>,
+    /// The engine's expected continuation from the position before this
+    /// move, as UCI moves — present even when the played move *was* the
+    /// top choice, since "what happens next" is useful either way.
+    /// Persisted (unlike `explanation`), so Game Review's continuation
+    /// line survives a restart instead of only existing right after a
+    /// fresh analysis run.
+    pub pv: Vec<String>,
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -501,19 +508,17 @@ pub fn analyze_game(
             let bb = eval::eval_components(&prep.board);
             let ba = eval::eval_components(&prep.board_after);
             Some(generate_explanation(
-                &prep.board,
                 &prep.board_after,
                 &bb,
                 &ba,
                 prep.side,
                 &prep.san,
-                prep.played_mv,
-                &best_move_uci,
-                &search_result.pv,
                 cpl,
                 classification,
             ))
         };
+
+        let pv: Vec<String> = search_result.pv.iter().map(|mv| mv.to_uci()).collect();
 
         analysis.push(MoveAnalysis {
             move_number: prep.move_number,
@@ -529,6 +534,7 @@ pub fn analyze_game(
             cpl,
             classification,
             explanation,
+            pv,
         });
     }
 
@@ -701,21 +707,19 @@ pub fn coach_line(ma: &MoveAnalysis, best_san: &str) -> String {
 // Human-readable explanations
 // ════════════════════════════════════════════════════════════════════════════
 
-/// Build a human-readable explanation for a single classified move. Combines:
-///   - a tone-appropriate intro for the classification,
-///   - a static check for hanging material the opponent can win next move,
-///   - the top three signed component swings (always rendered for consistency),
-///   - the engine's preferred line as PV-SAN (`Nf3 → Bxe4 Nxe4`).
+/// Build a human-readable explanation for a single classified move: a
+/// tone-appropriate intro for the classification, a static check for
+/// hanging material the opponent can win next move, and the top three
+/// signed component swings (always rendered for consistency).
+/// The engine's continuation is rendered separately by the caller from
+/// `MoveAnalysis::pv`, not baked into this prose — it's shown for every
+/// move (not just mistakes) and needs to stay interactive on the board.
 fn generate_explanation(
-    before_board: &Board,
     after_board: &Board,
     before: &EvalBreakdown,
     after: &EvalBreakdown,
     side: Color,
     played_san: &str,
-    _played_mv: Move,
-    best_uci: &str,
-    pv: &[Move],
     cpl: Score,
     class: MoveClass,
 ) -> String {
@@ -753,14 +757,6 @@ fn generate_explanation(
     for (name, swing) in swings.iter().take(3) {
         let verb = if *swing < 0 { "worsened" } else { "improved" };
         parts.push(format!("  • {name} {verb} by {} cp.", swing.abs()));
-    }
-
-    // Engine line: render as SAN for the first 4 plies of the PV.
-    let pv_san = pv_to_san(before_board, pv, 4);
-    if !pv_san.is_empty() {
-        parts.push(format!("Engine line: {}", pv_san.join(" → ")));
-    } else if !best_uci.is_empty() {
-        parts.push(format!("Engine preferred: {best_uci}."));
     }
 
     parts.join("\n")
@@ -814,19 +810,44 @@ fn square_name(sq: Square) -> String {
     format!("{file}{rank}")
 }
 
-/// Render the first `max_plies` of a PV as SAN by replaying on a clone of `start`.
-fn pv_to_san(start: &Board, pv: &[Move], max_plies: usize) -> Vec<String> {
+/// Render a `MoveAnalysis::pv` (UCI moves, from the position before the
+/// move) as SAN by replaying on a clone of `start`, pairing each move with
+/// the moving side's color and piece type — so a caller drawing the
+/// continuation can show a matching piece icon next to the move text.
+/// Stops early on the first move that fails to parse or play — shouldn't
+/// happen for a PV a real search produced, but a stored string surviving a
+/// future format change is safer truncated than panicking.
+pub fn pv_to_san(start: &Board, pv: &[String], max_plies: usize) -> Vec<(String, Color, Piece)> {
     let mut board = start.clone();
-    let mut out = Vec::with_capacity(max_plies);
-    for &mv in pv.iter().take(max_plies) {
-        if mv.is_null() {
+    let mut out = Vec::with_capacity(max_plies.min(pv.len()));
+    for uci in pv.iter().take(max_plies) {
+        let Some(mv) = crate::uci::parse_move(&board, uci) else {
             break;
-        }
-        let san = crate::db::uci_to_san(&board, &mv.to_uci());
-        out.push(san);
+        };
+        let Some((color, piece)) = board.piece_on(mv.from_sq()) else {
+            break;
+        };
+        let san = crate::db::uci_to_san(&board, uci);
+        out.push((san, color, piece));
         make_move(&mut board, mv);
     }
     out
+}
+
+/// Replay up to `plies` moves of a `MoveAnalysis::pv` from `start`,
+/// returning the resulting board — the "what if you kept playing the
+/// engine's line" position Game Review's hover-preview shows. `None` if
+/// `plies` is 0 or the first move doesn't parse/play, so the caller can
+/// fall back to the real position instead of previewing a no-op.
+pub fn replay_pv(start: &Board, pv: &[String], plies: usize) -> Option<Board> {
+    let mut board = start.clone();
+    let mut played = 0;
+    for uci in pv.iter().take(plies) {
+        let Some(mv) = crate::uci::parse_move(&board, uci) else { break };
+        make_move(&mut board, mv);
+        played += 1;
+    }
+    (played > 0).then_some(board)
 }
 
 /// Static "hanging piece" detector: look at the strongest opponent capture
@@ -893,6 +914,60 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pv_to_san_renders_moves_and_respects_max_plies() {
+        crate::attacks::init();
+        let start = Board::startpos();
+        let pv = vec!["e2e4".to_string(), "e7e5".to_string(), "g1f3".to_string()];
+        assert_eq!(
+            pv_to_san(&start, &pv, 10),
+            vec![
+                ("e4".to_string(), Color::White, Piece::Pawn),
+                ("e5".to_string(), Color::Black, Piece::Pawn),
+                ("Nf3".to_string(), Color::White, Piece::Knight),
+            ]
+        );
+        assert_eq!(
+            pv_to_san(&start, &pv, 2),
+            vec![
+                ("e4".to_string(), Color::White, Piece::Pawn),
+                ("e5".to_string(), Color::Black, Piece::Pawn),
+            ]
+        );
+    }
+
+    #[test]
+    fn pv_to_san_stops_at_the_first_unplayable_move() {
+        crate::attacks::init();
+        let start = Board::startpos();
+        // A legal move followed by a nonsense move: renders the first and
+        // stops rather than panicking or skipping ahead.
+        let pv = vec!["e2e4".to_string(), "zz9z".to_string(), "g1f3".to_string()];
+        assert_eq!(
+            pv_to_san(&start, &pv, 10),
+            vec![("e4".to_string(), Color::White, Piece::Pawn)]
+        );
+    }
+
+    #[test]
+    fn replay_pv_returns_the_resulting_board() {
+        crate::attacks::init();
+        let start = Board::startpos();
+        let pv = vec!["e2e4".to_string(), "e7e5".to_string()];
+        let after_one = replay_pv(&start, &pv, 1).unwrap();
+        assert_ne!(after_one.hash, start.hash);
+        let after_two = replay_pv(&start, &pv, 2).unwrap();
+        assert_ne!(after_two.hash, after_one.hash);
+    }
+
+    #[test]
+    fn replay_pv_of_zero_plies_is_none() {
+        crate::attacks::init();
+        let start = Board::startpos();
+        assert!(replay_pv(&start, &["e2e4".to_string()], 0).is_none());
+        assert!(replay_pv(&start, &[], 5).is_none());
+    }
+
+    #[test]
     fn classification_ranges() {
         // Industry-standard bands (close to chess.com/lichess).
         assert_eq!(MoveClass::from_cpl(0, false), MoveClass::Best);
@@ -938,6 +1013,7 @@ mod tests {
             cpl,
             classification: class,
             explanation: None,
+            pv: Vec::new(),
         }
     }
 

@@ -1,5 +1,229 @@
 use super::*;
 
+/// Who the human plays in a new local game, picked on the setup card.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SideChoice {
+    White,
+    Black,
+    Random,
+}
+
+impl SideChoice {
+    pub(crate) fn resolve(self) -> Color {
+        match self {
+            SideChoice::White => Color::White,
+            SideChoice::Black => Color::Black,
+            SideChoice::Random => {
+                let nanos = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.subsec_nanos())
+                    .unwrap_or(0);
+                if nanos % 2 == 0 {
+                    Color::White
+                } else {
+                    Color::Black
+                }
+            }
+        }
+    }
+
+    /// String form persisted to settings.toml.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            SideChoice::White => "white",
+            SideChoice::Black => "black",
+            SideChoice::Random => "random",
+        }
+    }
+
+    /// Inverse of `as_str`. Unknown values fall back to White.
+    pub(crate) fn from_str(s: &str) -> Self {
+        match s {
+            "black" => SideChoice::Black,
+            "random" => SideChoice::Random,
+            _ => SideChoice::White,
+        }
+    }
+}
+
+/// Clock preset for a new local game, picked on the setup card.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TimePreset {
+    Bullet1_0,
+    Bullet2_1,
+    Blitz3_0,
+    Blitz5_0,
+    Blitz5_3,
+    Rapid10_0,
+    Rapid15_10,
+    Classical30_0,
+}
+
+impl TimePreset {
+    pub(crate) const ALL: [TimePreset; 8] = [
+        TimePreset::Bullet1_0,
+        TimePreset::Bullet2_1,
+        TimePreset::Blitz3_0,
+        TimePreset::Blitz5_0,
+        TimePreset::Blitz5_3,
+        TimePreset::Rapid10_0,
+        TimePreset::Rapid15_10,
+        TimePreset::Classical30_0,
+    ];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            TimePreset::Bullet1_0 => "1+0",
+            TimePreset::Bullet2_1 => "2+1",
+            TimePreset::Blitz3_0 => "3+0",
+            TimePreset::Blitz5_0 => "5+0",
+            TimePreset::Blitz5_3 => "5+3",
+            TimePreset::Rapid10_0 => "10+0",
+            TimePreset::Rapid15_10 => "15+10",
+            TimePreset::Classical30_0 => "30+0",
+        }
+    }
+
+    /// String form persisted to settings.toml.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            TimePreset::Bullet1_0 => "bullet_1_0",
+            TimePreset::Bullet2_1 => "bullet_2_1",
+            TimePreset::Blitz3_0 => "blitz_3_0",
+            TimePreset::Blitz5_0 => "blitz_5_0",
+            TimePreset::Blitz5_3 => "blitz_5_3",
+            TimePreset::Rapid10_0 => "rapid_10_0",
+            TimePreset::Rapid15_10 => "rapid_15_10",
+            TimePreset::Classical30_0 => "classical_30_0",
+        }
+    }
+
+    /// Inverse of `as_str`. Unknown values fall back to Rapid10_0.
+    pub(crate) fn from_str(s: &str) -> Self {
+        match s {
+            "bullet_1_0" => TimePreset::Bullet1_0,
+            "bullet_2_1" => TimePreset::Bullet2_1,
+            "blitz_3_0" => TimePreset::Blitz3_0,
+            "blitz_5_0" => TimePreset::Blitz5_0,
+            "blitz_5_3" => TimePreset::Blitz5_3,
+            "rapid_15_10" => TimePreset::Rapid15_10,
+            "classical_30_0" => TimePreset::Classical30_0,
+            _ => TimePreset::Rapid10_0,
+        }
+    }
+
+    pub(crate) fn initial_ms(self) -> u64 {
+        match self {
+            TimePreset::Bullet1_0 => 60_000,
+            TimePreset::Bullet2_1 => 120_000,
+            TimePreset::Blitz3_0 => 180_000,
+            TimePreset::Blitz5_0 => 300_000,
+            TimePreset::Blitz5_3 => 300_000,
+            TimePreset::Rapid10_0 => 600_000,
+            TimePreset::Rapid15_10 => 900_000,
+            TimePreset::Classical30_0 => 1_800_000,
+        }
+    }
+
+    pub(crate) fn increment_ms(self) -> u64 {
+        match self {
+            TimePreset::Bullet2_1 => 1_000,
+            TimePreset::Blitz5_3 => 3_000,
+            TimePreset::Rapid15_10 => 10_000,
+            _ => 0,
+        }
+    }
+}
+
+/// Opponent strength for a new local game, picked on the setup card.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LocalDifficulty {
+    Beginner,
+    Club,
+    Tournament,
+    Master,
+    Adaptive,
+    Custom,
+}
+
+impl LocalDifficulty {
+    pub(crate) const ALL: [LocalDifficulty; 6] = [
+        LocalDifficulty::Beginner,
+        LocalDifficulty::Club,
+        LocalDifficulty::Tournament,
+        LocalDifficulty::Master,
+        LocalDifficulty::Adaptive,
+        LocalDifficulty::Custom,
+    ];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            LocalDifficulty::Beginner => "Beginner",
+            LocalDifficulty::Club => "Club",
+            LocalDifficulty::Tournament => "Tournament",
+            LocalDifficulty::Master => "Master",
+            LocalDifficulty::Adaptive => "Adaptive",
+            LocalDifficulty::Custom => "Custom",
+        }
+    }
+
+    /// String form persisted to settings.toml.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            LocalDifficulty::Beginner => "beginner",
+            LocalDifficulty::Club => "club",
+            LocalDifficulty::Tournament => "tournament",
+            LocalDifficulty::Master => "master",
+            LocalDifficulty::Adaptive => "adaptive",
+            LocalDifficulty::Custom => "custom",
+        }
+    }
+
+    /// Inverse of `as_str`. Unknown values fall back to Tournament.
+    pub(crate) fn from_str(s: &str) -> Self {
+        match s {
+            "beginner" => LocalDifficulty::Beginner,
+            "club" => LocalDifficulty::Club,
+            "master" => LocalDifficulty::Master,
+            "adaptive" => LocalDifficulty::Adaptive,
+            "custom" => LocalDifficulty::Custom,
+            _ => LocalDifficulty::Tournament,
+        }
+    }
+
+    pub(crate) fn numeric_level(self, adaptive_level: u32) -> u32 {
+        match self {
+            LocalDifficulty::Beginner => crate::strength::BEGINNER_LEVEL,
+            LocalDifficulty::Club => crate::strength::CLUB_LEVEL,
+            LocalDifficulty::Tournament => crate::strength::TOURNAMENT_LEVEL,
+            LocalDifficulty::Master => crate::strength::MASTER_LEVEL,
+            LocalDifficulty::Adaptive => adaptive_level,
+            LocalDifficulty::Custom => crate::strength::MASTER_LEVEL,
+        }
+    }
+
+    pub(crate) fn description(self, adaptive_level: u32) -> String {
+        match self {
+            LocalDifficulty::Beginner => "Fast, forgiving replies with shallow calculation.".into(),
+            LocalDifficulty::Club => "Solid club-level play with restrained search depth.".into(),
+            LocalDifficulty::Tournament => "Balanced default strength for serious local games.".into(),
+            LocalDifficulty::Master => "Focalors' strongest local profile with deeper search.".into(),
+            LocalDifficulty::Adaptive => format!(
+                "Auto-adjusts to your level. Currently Level {} (~{} Elo).",
+                adaptive_level,
+                crate::strength::estimated_elo(adaptive_level),
+            ),
+            LocalDifficulty::Custom => "Thinks for a fixed time or to a fixed depth per move. Set it up under Advanced.".into(),
+        }
+    }
+}
+
+impl Default for LocalDifficulty {
+    fn default() -> Self {
+        Self::Tournament
+    }
+}
+
 impl FocalorsApp {
 // ── Welcome dialog (first launch) ────────────────────────────────
 

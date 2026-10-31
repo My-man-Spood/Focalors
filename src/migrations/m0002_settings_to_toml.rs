@@ -17,7 +17,7 @@ impl Migration for M {
         "settings_to_toml"
     }
 
-    fn up(&self, conn: &Connection) -> SqlResult<()> {
+    fn up(&self, conn: &Connection, settings_path: &std::path::Path) -> SqlResult<()> {
         let settings = conn.query_row(
             "SELECT ui_theme, board_theme, piece_set, analysis_quality, sfx_volume,
                     custom_use_time_limit, custom_think_time_ms, custom_max_depth
@@ -33,6 +33,10 @@ impl Migration for M {
                     custom_use_time_limit: row.get::<_, i64>(5)? != 0,
                     custom_think_time_ms: row.get(6)?,
                     custom_max_depth: row.get(7)?,
+                    // These were never DB columns (added after this
+                    // migration was written) — the migration's job is
+                    // only to carry over what the DB actually held.
+                    ..crate::settings::Settings::default()
                 })
             },
         )?;
@@ -40,7 +44,11 @@ impl Migration for M {
         // Best-effort: a write failure here shouldn't block the schema
         // change. Worst case, the next load() falls back to defaults —
         // same failure mode the old DB-column reads already had.
-        let _ = crate::settings::save(&settings);
+        // `settings_path` (not the bare, hardcoded-real `settings::save`)
+        // is what lets a test exercise this migration against a throwaway
+        // path instead of silently overwriting the real settings.toml —
+        // see the Migration trait's doc comment for why that matters.
+        let _ = crate::settings::save_to(settings_path, &settings, "migration_m0002_up");
 
         conn.execute_batch(
             "
@@ -56,7 +64,7 @@ impl Migration for M {
         )
     }
 
-    fn down(&self, conn: &Connection) -> SqlResult<()> {
+    fn down(&self, conn: &Connection, settings_path: &std::path::Path) -> SqlResult<()> {
         conn.execute_batch(
             "
             ALTER TABLE user_profile ADD COLUMN ui_theme TEXT NOT NULL DEFAULT 'light';
@@ -70,7 +78,7 @@ impl Migration for M {
             ",
         )?;
 
-        let settings = crate::settings::load();
+        let settings = crate::settings::load_from(settings_path);
         conn.execute(
             "UPDATE user_profile SET ui_theme = ?1, board_theme = ?2, piece_set = ?3,
                 analysis_quality = ?4, sfx_volume = ?5, custom_use_time_limit = ?6,

@@ -111,6 +111,7 @@ impl FocalorsApp {
 
     pub(crate) fn draw_board(&mut self, ui: &mut egui::Ui, override_pos: Option<&BoardView<'_>>) {
         let interactive = override_pos.map(|v| v.interactive).unwrap_or(true);
+        let preview = override_pos.map(|v| v.preview).unwrap_or(false);
         let (board, live_last_move) = match override_pos {
             Some(v) => (v.board.clone(), None),
             None => {
@@ -329,6 +330,18 @@ impl FocalorsApp {
                     );
                 }
             }
+        }
+
+        // "Theoretical land" marker: this position never happened in the
+        // real game, it's a hover-preview of the engine's continuation.
+        // Chess.com-style whole-board wash, not just a border — a border
+        // alone was easy to miss while actually looking at the pieces.
+        if preview {
+            painter.rect_filled(
+                board_rect,
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 110),
+            );
         }
 
         // Pieces gliding between squares, drawn on top of the static board.

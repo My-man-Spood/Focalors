@@ -56,7 +56,8 @@ impl Database {
         }
         eprintln!("Database: {}", path.display());
         let conn = Connection::open(&path)?;
-        crate::migrations::run_pending(&conn)?;
+        crate::settings::log_event(&format!("Database::open() at {}", path.display()));
+        crate::migrations::run_pending(&conn, &crate::settings::settings_path())?;
         Ok(Database { conn })
     }
 
@@ -406,8 +407,8 @@ impl Database {
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO move_analysis (game_id, move_number, side, move_uci, move_san,
-                 eval_before, eval_after, best_move, best_eval, classification)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                 eval_before, eval_after, best_move, best_eval, classification, best_line)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             )?;
             for (i, ma) in moves.iter().enumerate() {
                 let side = if ma.side == crate::types::Color::White { "white" } else { "black" };
@@ -423,6 +424,7 @@ impl Database {
                     ma.best_move_uci,
                     ma.best_eval,
                     ma.classification.to_db_str(),
+                    ma.pv.join(" "),
                 ])?;
             }
         }
@@ -444,14 +446,15 @@ impl Database {
     /// game has never been analyzed (no rows in move_analysis). Rows are
     /// returned in move order. Explanation is left as `None` — explanations
     /// are not persisted; callers that want them can regenerate from the
-    /// board state.
+    /// board state. `pv` is persisted (unlike explanation) so the
+    /// continuation line survives a restart.
     pub fn get_move_analysis(
         &self,
         game_id: i64,
     ) -> SqlResult<Vec<crate::analysis::MoveAnalysis>> {
         let mut stmt = self.conn.prepare(
             "SELECT move_number, side, move_san, eval_before, eval_after,
-                    best_move, best_eval, classification
+                    best_move, best_eval, classification, best_line
              FROM move_analysis
              WHERE game_id = ?1
              ORDER BY id ASC",
@@ -459,6 +462,7 @@ impl Database {
         let rows = stmt.query_map(params![game_id], |row| {
             let side_str: String = row.get(1)?;
             let class_str: String = row.get(7)?;
+            let best_line: String = row.get(8)?;
             let side = if side_str == "white" {
                 crate::types::Color::White
             } else {
@@ -486,6 +490,7 @@ impl Database {
                 cpl,
                 classification,
                 explanation: None,
+                pv: best_line.split_whitespace().map(str::to_string).collect(),
             })
         })?;
         rows.collect()
@@ -860,7 +865,11 @@ mod tests {
         let db = Database {
             conn: Connection::open_in_memory().unwrap(),
         };
-        crate::migrations::run_pending(&db.conn).unwrap();
+        crate::migrations::run_pending_for_test(
+            &db.conn,
+            &std::env::temp_dir().join("focalors_migrations_test_db_opens_and_creates_profile.toml"),
+        )
+        .unwrap();
         let profile = db.get_or_create_profile().unwrap();
         assert_eq!(profile.name, "Player");
         assert_eq!(profile.rating, 1200);
@@ -872,7 +881,11 @@ mod tests {
         let db = Database {
             conn: Connection::open_in_memory().unwrap(),
         };
-        crate::migrations::run_pending(&db.conn).unwrap();
+        crate::migrations::run_pending_for_test(
+            &db.conn,
+            &std::env::temp_dir().join("focalors_migrations_test_db_updates_profile.toml"),
+        )
+        .unwrap();
         db.get_or_create_profile().unwrap();
         db.update_profile("Nick", 1500).unwrap();
         let p = db.get_or_create_profile().unwrap();
@@ -885,7 +898,11 @@ mod tests {
         let db = Database {
             conn: Connection::open_in_memory().unwrap(),
         };
-        crate::migrations::run_pending(&db.conn).unwrap();
+        crate::migrations::run_pending_for_test(
+            &db.conn,
+            &std::env::temp_dir().join("focalors_migrations_test_db_saves_and_retrieves_games.toml"),
+        )
+        .unwrap();
 
         let id = db
             .save_game("white", "win", Some("checkmate"), Some("10+0"), Some("Club"), "1. e4 e5 1-0", Some(2))
@@ -903,7 +920,11 @@ mod tests {
         let db = Database {
             conn: Connection::open_in_memory().unwrap(),
         };
-        crate::migrations::run_pending(&db.conn).unwrap();
+        crate::migrations::run_pending_for_test(
+            &db.conn,
+            &std::env::temp_dir().join("focalors_migrations_test_db_counts_results.toml"),
+        )
+        .unwrap();
 
         db.save_game("white", "win", None, None, None, "1-0", None).unwrap();
         db.save_game("black", "loss", None, None, None, "1-0", None).unwrap();
@@ -914,6 +935,86 @@ mod tests {
         assert_eq!(w, 2);
         assert_eq!(l, 1);
         assert_eq!(d, 1);
+    }
+
+    #[test]
+    fn move_analysis_round_trips_the_pv() {
+        use crate::analysis::{MoveAnalysis, MoveClass};
+        use crate::types::Color;
+
+        let db = Database {
+            conn: Connection::open_in_memory().unwrap(),
+        };
+        crate::migrations::run_pending_for_test(
+            &db.conn,
+            &std::env::temp_dir().join("focalors_migrations_test_move_analysis_round_trips_the_pv.toml"),
+        )
+        .unwrap();
+        let game_id = db
+            .save_game("white", "win", None, None, None, "1-0", None)
+            .unwrap();
+
+        let moves = vec![MoveAnalysis {
+            move_number: 1,
+            side: Color::White,
+            move_san: "Nf3".to_string(),
+            eval_before: 20,
+            eval_after: 15,
+            best_move_uci: "g1f3".to_string(),
+            best_eval: 20,
+            cpl: 5,
+            classification: MoveClass::Best,
+            explanation: None,
+            pv: vec!["g1f3".to_string(), "b8c6".to_string(), "f1b5".to_string()],
+        }];
+        db.save_move_analysis(game_id, &["g1f3".to_string()], &moves).unwrap();
+
+        let loaded = db.get_move_analysis(game_id).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].pv, vec!["g1f3", "b8c6", "f1b5"]);
+        // explanation is never persisted, unlike pv — regenerable from
+        // board state, which get_move_analysis's callers don't need since
+        // the stored pv already carries the useful part.
+        assert_eq!(loaded[0].explanation, None);
+    }
+
+    /// A game analyzed before the pv column existed stores an empty
+    /// `best_line` (the migration's column default) — must load as an
+    /// empty Vec, not a one-element Vec containing an empty string.
+    #[test]
+    fn move_analysis_with_no_saved_pv_loads_as_empty_vec() {
+        use crate::analysis::{MoveAnalysis, MoveClass};
+        use crate::types::Color;
+
+        let db = Database {
+            conn: Connection::open_in_memory().unwrap(),
+        };
+        crate::migrations::run_pending_for_test(
+            &db.conn,
+            &std::env::temp_dir().join("focalors_migrations_test_move_analysis_with_no_saved_pv_loads_as_empty_vec.toml"),
+        )
+        .unwrap();
+        let game_id = db
+            .save_game("white", "win", None, None, None, "1-0", None)
+            .unwrap();
+
+        let moves = vec![MoveAnalysis {
+            move_number: 1,
+            side: Color::White,
+            move_san: "Nf3".to_string(),
+            eval_before: 20,
+            eval_after: 15,
+            best_move_uci: "g1f3".to_string(),
+            best_eval: 20,
+            cpl: 5,
+            classification: MoveClass::Best,
+            explanation: None,
+            pv: Vec::new(),
+        }];
+        db.save_move_analysis(game_id, &["g1f3".to_string()], &moves).unwrap();
+
+        let loaded = db.get_move_analysis(game_id).unwrap();
+        assert_eq!(loaded[0].pv, Vec::<String>::new());
     }
 
     #[test]
@@ -954,6 +1055,7 @@ mod coaching_stats_tests {
             cpl: 0,
             classification: class,
             explanation: None,
+            pv: Vec::new(),
         }
     }
 
@@ -966,7 +1068,11 @@ mod coaching_stats_tests {
         let db = Database {
             conn: Connection::open_in_memory().unwrap(),
         };
-        crate::migrations::run_pending(&db.conn).unwrap();
+        crate::migrations::run_pending_for_test(
+            &db.conn,
+            &std::env::temp_dir().join("focalors_migrations_test_coaching_stats_count_only_the_users_moves.toml"),
+        )
+        .unwrap();
         let game_id = db
             .save_game("white", "win", None, None, None, "", Some(2))
             .unwrap();
@@ -1011,7 +1117,11 @@ mod coaching_stats_tests {
         let db = Database {
             conn: Connection::open_in_memory().unwrap(),
         };
-        crate::migrations::run_pending(&db.conn).unwrap();
+        crate::migrations::run_pending_for_test(
+            &db.conn,
+            &std::env::temp_dir().join("focalors_migrations_test_recent_results_filter_by_difficulty.toml"),
+        )
+        .unwrap();
         for (result, level) in [
             ("win", "Adaptive"),
             ("loss", "Master"),

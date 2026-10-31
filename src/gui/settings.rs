@@ -132,7 +132,7 @@ impl FocalorsApp {
         // button is held (the slider was released) or the window goes away.
         let pointer_down = ctx.input(|i| i.pointer.any_down());
         if self.sfx_volume_dirty && (!open || !pointer_down) {
-            self.save_settings();
+            self.save_settings("sfx_volume_debounce");
             self.sfx_volume_dirty = false;
         }
         self.show_settings = open;
@@ -269,7 +269,7 @@ impl FocalorsApp {
         // button is held (the slider was released) or the window goes away.
         let pointer_down = ctx.input(|i| i.pointer.any_down());
         if self.custom_engine_dirty && (!open || !pointer_down) {
-            self.save_settings();
+            self.save_settings("custom_engine_debounce");
             self.custom_engine_dirty = false;
         }
         self.show_advanced_engine_settings = open;
